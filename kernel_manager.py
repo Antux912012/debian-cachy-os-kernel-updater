@@ -7,7 +7,7 @@ import re
 import glob
 import stat
 
-APP_VERSION = "1.1.6"
+APP_VERSION = "1.1.7"
 
 class KernelManager:
     APP_VERSION = APP_VERSION
@@ -1125,26 +1125,31 @@ WORKDIR /workspace
         ]
 
         if strip_debug_symbols:
+            # Keep reduced DWARF + vmlinux BTF so sched-ext (CONFIG_SCHED_CLASS_EXT=y) works,
+            # while disabling split/module debug bloat and -dbg package generation.
             config_sanitize_cmd.extend([
-                '--disable', 'DEBUG_INFO_BTF',
-                '--disable', 'DEBUG_INFO_DWARF4',
-                '--disable', 'DEBUG_INFO_DWARF5',
-                '--disable', 'DEBUG_INFO_DWARF_TOOLCHAIN_DEFAULT',
-                '--enable', 'DEBUG_INFO_NONE',
+                '--disable', 'DEBUG_INFO_NONE',
+                '--enable', 'DEBUG_INFO',
+                '--enable', 'DEBUG_INFO_DWARF_TOOLCHAIN_DEFAULT',
+                '--enable', 'DEBUG_INFO_REDUCED',
+                '--enable', 'DEBUG_INFO_BTF',
+                '--disable', 'DEBUG_INFO_BTF_MODULES',
+                '--disable', 'DEBUG_INFO_SPLIT',
             ])
         else:
             config_sanitize_cmd.extend([
                 '--disable', 'DEBUG_INFO_NONE',
                 '--enable', 'DEBUG_INFO_DWARF5',
+                '--enable', 'DEBUG_INFO_BTF',
             ])
 
         self._run_cmd(['bash'] + config_sanitize_cmd, cwd=kernel_dir, progress_callback=None, host_exec=False)
 
-        # 2. CPU Scheduler Configuration (Default: BORE)
-        if cpu_scheduler == 'bore':
-            self._run_cmd(['bash', 'scripts/config', '--enable', 'CONFIG_SCHED_BORE'], cwd=kernel_dir, progress_callback=None, host_exec=False)
+        # 2. CPU Scheduler Configuration (Default: BORE + sched-ext BPF support)
+        if cpu_scheduler in ('bore', 'bore_scx'):
+            self._run_cmd(['bash', 'scripts/config', '--enable', 'CONFIG_SCHED_BORE', '--enable', 'CONFIG_BPF_SYSCALL', '--enable', 'CONFIG_BPF_JIT', '--enable', 'CONFIG_DEBUG_INFO_BTF', '--enable', 'CONFIG_FTRACE', '--enable', 'CONFIG_KPROBES', '--enable', 'CONFIG_SCHED_CLASS_EXT'], cwd=kernel_dir, progress_callback=None, host_exec=False)
         else:
-            self._run_cmd(['bash', 'scripts/config', '--disable', 'CONFIG_SCHED_BORE'], cwd=kernel_dir, progress_callback=None, host_exec=False)
+            self._run_cmd(['bash', 'scripts/config', '--disable', 'CONFIG_SCHED_BORE', '--enable', 'CONFIG_BPF_SYSCALL', '--enable', 'CONFIG_BPF_JIT', '--enable', 'CONFIG_DEBUG_INFO_BTF', '--enable', 'CONFIG_FTRACE', '--enable', 'CONFIG_KPROBES', '--enable', 'CONFIG_SCHED_CLASS_EXT'], cwd=kernel_dir, progress_callback=None, host_exec=False)
 
         # 3. Compiler & LTO Selection
         use_llvm = compiler_lto.startswith('clang')
@@ -1305,6 +1310,10 @@ WORKDIR /workspace
 
         safeties = [
             # Essential filesystems
+            ('enable', 'CONFIG_BPF_SYSCALL'),
+            ('enable', 'CONFIG_BPF_JIT'),
+            ('enable', 'CONFIG_DEBUG_INFO_BTF'),
+            ('enable', 'CONFIG_SCHED_CLASS_EXT'),
             ('enable', 'CONFIG_EXT4_FS'),
             ('module', 'CONFIG_BTRFS_FS'),
             ('enable', 'CONFIG_VFAT_FS'),
@@ -1643,6 +1652,16 @@ WORKDIR /workspace
                 if progress_callback:
                     progress_callback(f"    [!] Warning: could not copy {fname}: {e}")
 
+        # Stage bundled precompiled scx-scheds .deb into output_dir so it installs alongside the kernel
+        scx_deb_src = self.find_bundled_scx_deb()
+        if scx_deb_src and os.path.isfile(scx_deb_src):
+            try:
+                shutil.copy2(scx_deb_src, os.path.join(output_dir, os.path.basename(scx_deb_src)))
+                if progress_callback:
+                    progress_callback(f"    • Staged {os.path.basename(scx_deb_src)} (sched-ext BPF schedulers)")
+            except Exception:
+                pass
+
         # Also preserve .config in the output directory
         if os.path.exists(config_dst):
             try:
@@ -1668,7 +1687,7 @@ echo "=== Installing {kernel_brand} ==="
 echo "Package directory: $DIR"
 
 DEBS=()
-for f in "$DIR"/linux-image-*.deb "$DIR"/linux-headers-*.deb; do
+for f in "$DIR"/linux-image-*.deb "$DIR"/linux-headers-*.deb "$DIR"/scx-scheds_*.deb; do
     if [ -f "$f" ] && [[ "$f" != *"-dbg"* ]]; then
         DEBS+=("$f")
     fi
@@ -2225,12 +2244,142 @@ echo "=========================================================="
         return True
 
 
+
+    SCX_VERSION = "1.1.4"
+    SCX_SCHEDULERS = [
+        "scx_bpfland", "scx_lavd", "scx_flash", "scx_rusty", "scx_cosmos",
+        "scx_p2dq", "scx_beerland", "scx_rustland", "scx_layered",
+        "scx_tickless", "scx_cake", "scx_eevdf", "scx_mitosis", "scx_rlfifo"
+    ]
+
+    def find_bundled_scx_deb(self) -> str:
+        """Locates the bundled precompiled scx-scheds_1.1.4_amd64.deb package."""
+        deb_name = f"scx-scheds_{self.SCX_VERSION}_amd64.deb"
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        candidates = [
+            os.path.join(base_dir, "assets", "scx", deb_name),
+            f"/usr/share/cachy-kernel-updater/assets/scx/{deb_name}",
+            f"/app/share/cachy-kernel-updater/assets/scx/{deb_name}",
+            os.path.join(self.config_dir, deb_name),
+        ]
+        appdir = os.environ.get("APPDIR")
+        if appdir:
+            candidates.insert(0, os.path.join(appdir, "usr/share/cachy-kernel-updater/assets/scx", deb_name))
+        for p in candidates:
+            if os.path.isfile(p):
+                return p
+        return ""
+
+    def get_scx_status(self) -> dict:
+        """Checks kernel sched_ext sysfs state and installed scx_* binaries on the host."""
+        state_paths = ("/run/host/sys/kernel/sched_ext/state", "/sys/kernel/sched_ext/state")
+        ops_paths = ("/run/host/sys/kernel/sched_ext/root/ops", "/sys/kernel/sched_ext/root/ops")
+        kernel_supported = False
+        sysfs_state = "unavailable"
+        active_ops = "none"
+
+        for sp in state_paths:
+            if os.path.exists(sp):
+                kernel_supported = True
+                try:
+                    with open(sp, "r") as f:
+                        sysfs_state = f.read().strip()
+                except Exception:
+                    sysfs_state = "disabled"
+                break
+
+        for op in ops_paths:
+            if os.path.exists(op):
+                try:
+                    with open(op, "r") as f:
+                        val = f.read().strip()
+                        if val:
+                            active_ops = val
+                except Exception:
+                    pass
+                break
+
+        installed = []
+        for sched in self.SCX_SCHEDULERS:
+            if self._which_host(sched) or os.path.isfile(f"/run/host/usr/bin/{sched}") or os.path.isfile(f"/usr/bin/{sched}"):
+                installed.append(sched)
+
+        return {
+            "kernel_supported": kernel_supported,
+            "state": sysfs_state,
+            "active_ops": active_ops,
+            "installed_schedulers": installed,
+            "installed_count": len(installed),
+            "bundled_deb": self.find_bundled_scx_deb(),
+        }
+
+    def install_scx_schedulers(self, progress_callback=None) -> bool:
+        """
+        Installs sched-ext (scx v1.1.4) userspace BPF schedulers on the host system:
+        1. Uses bundled precompiled scx-scheds_1.1.4_amd64.deb if available
+        2. Downloads scx-scheds_1.1.4_amd64.deb from GitHub Releases
+        3. Fallback: Compiles from https://github.com/sched-ext/scx.git via Cargo
+        """
+        if progress_callback:
+            progress_callback("\n=======================================================")
+            progress_callback(f"[*] Installing sched-ext (SCX v{self.SCX_VERSION}) Userspace BPF Schedulers...")
+            progress_callback("=======================================================")
+
+        os.makedirs(self.download_dir, exist_ok=True)
+        staged_deb = os.path.join(self.download_dir, f"scx-scheds_{self.SCX_VERSION}_amd64.deb")
+
+        bundled_deb = self.find_bundled_scx_deb()
+        if bundled_deb and os.path.isfile(bundled_deb):
+            shutil.copy2(bundled_deb, staged_deb)
+            if progress_callback:
+                progress_callback(f"[✓] Found bundled precompiled package: {os.path.basename(bundled_deb)}")
+
+        # Also copy into kernel output folder so future kernel installs include it
+        try:
+            out_dir = self.last_output_dir or self.get_output_kernel_dir(is_native=False)
+            if out_dir and os.path.isfile(staged_deb):
+                os.makedirs(out_dir, exist_ok=True)
+                shutil.copy2(staged_deb, os.path.join(out_dir, os.path.basename(staged_deb)))
+        except Exception:
+            pass
+
+        deb_url_1 = f"https://github.com/Antux912012/debian-cachy-os-kernel-updater/releases/latest/download/scx-scheds_{self.SCX_VERSION}_amd64.deb"
+        deb_url_2 = f"https://github.com/Antux912012/mithrandir/releases/latest/download/scx-scheds_{self.SCX_VERSION}_amd64.deb"
+
+        install_script = f"""set -e
+export DEBIAN_FRONTEND=noninteractive
+if [ -f "{staged_deb}" ]; then
+    echo "[*] Installing staged {os.path.basename(staged_deb)} via dpkg..."
+    dpkg -i "{staged_deb}" || apt-get install -f -y
+elif curl -fsSL "{deb_url_1}" -o "{staged_deb}" || curl -fsSL "{deb_url_2}" -o "{staged_deb}"; then
+    echo "[*] Installing downloaded {os.path.basename(staged_deb)} from GitHub Releases..."
+    dpkg -i "{staged_deb}" || apt-get install -f -y
+else
+    echo "[*] Building sched-ext v{self.SCX_VERSION} from source via Cargo..."
+    apt-get update && apt-get install -y git build-essential pkg-config clang llvm libbpf-dev libelf-dev libzstd-dev zlib1g-dev protobuf-compiler libseccomp-dev cargo rustc
+    rm -rf /tmp/cachy-scx-src
+    git clone --branch v{self.SCX_VERSION} --depth 1 https://github.com/sched-ext/scx.git /tmp/cachy-scx-src
+    cd /tmp/cachy-scx-src
+    cargo build --profile=release-tiny -p scx_bpfland -p scx_lavd -p scx_flash -p scx_rusty -p scx_cosmos -p scx_p2dq -p scx_beerland -p scx_rustland -p scx_layered -p scx_tickless -p scx_cake -p scx_eevdf -p scx_mitosis -p scx_rlfifo
+    install -m 0755 target/release-tiny/scx_* /usr/bin/
+    rm -rf /tmp/cachy-scx-src
+fi
+"""
+        self._run_cmd(["pkexec", "bash", "-c", install_script], cwd="/tmp", progress_callback=progress_callback)
+        if progress_callback:
+            status = self.get_scx_status()
+            progress_callback(f"\n[✓] sched-ext (SCX v{self.SCX_VERSION}) installed! ({status['installed_count']} schedulers available in /usr/bin)\n")
+        return True
+
+
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser(description="Debian CachyOS Kernel Manager CLI")
     parser.add_argument('--check', action='store_true', help="Check for latest CachyOS kernel version")
     parser.add_argument('--status-sb', action='store_true', help="Check UEFI Secure Boot status")
     parser.add_argument('--install-deps', action='store_true', help="Install required build dependencies")
+    parser.add_argument('--install-scx', action='store_true', help="Install precompiled sched-ext (SCX v1.1.4) BPF schedulers")
+    parser.add_argument('--status-scx', action='store_true', help="Check sched-ext (SCX) kernel and package status")
     parser.add_argument('--container', action='store_true', help="Use container environment (Podman/Docker)")
     parser.add_argument('--optimize', action='store_true', help="Optimize kernel compilation for local system (-march=native)")
     parser.add_argument('--build', action='store_true', help="Download and compile the latest CachyOS kernel")
@@ -2257,6 +2406,12 @@ if __name__ == '__main__':
     elif args.status_sb:
         sb = km.get_secure_boot_status()
         print(f"UEFI Secure Boot: {'ENABLED' if sb else 'DISABLED'}")
+    elif args.status_scx:
+        st = km.get_scx_status()
+        print(f"Kernel sched_ext supported: {st['kernel_supported']} (state: {st['state']}, active: {st['active_ops']})")
+        print(f"Installed SCX schedulers ({st['installed_count']}): {st['installed_schedulers']}")
+    elif args.install_scx:
+        km.install_scx_schedulers(progress_callback=cli_log)
     elif args.install_deps:
         km.install_build_dependencies(progress_callback=cli_log, use_container=args.container)
     elif args.build:

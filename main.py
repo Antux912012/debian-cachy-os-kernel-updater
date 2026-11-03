@@ -11,7 +11,7 @@ from gi.repository import Gtk, Adw, GLib, Gdk, Gio
 
 from kernel_manager import KernelManager
 
-APP_VERSION = "1.1.6"
+APP_VERSION = "1.1.7"
 
 class KernelUpdaterWindow(Adw.ApplicationWindow):
     def __init__(self, app):
@@ -265,6 +265,37 @@ class KernelUpdaterWindow(Adw.ApplicationWindow):
         self.sign_postinst_row.add_suffix(self.sb_row_pill)
         self.step2_group.add(self.sign_postinst_row)
 
+        # 4b. Pluggable sched-ext (SCX v1.1.4) BPF Schedulers Row
+        scx_st = self.kernel_manager.get_scx_status()
+        self.scx_row = Adw.ActionRow()
+        self.scx_row.set_title("sched-ext (SCX v1.1.4) Userspace BPF Schedulers")
+        self.scx_row.set_subtitle(
+            "Bundles & installs scx_bpfland, scx_lavd, scx_flash, scx_rusty, scx_cosmos, scx_p2dq, scx_cake, and scxctl."
+        )
+        self.scx_row.set_tooltip_text(
+            "Installs precompiled sched-ext (scx v1.1.4) BPF schedulers (.deb) and enables CONFIG_SCHED_CLASS_EXT=y in compiled kernels."
+        )
+        scx_count = scx_st.get("installed_count", 0)
+        self.scx_pill = Gtk.Label(
+            label=f"[SCX: {scx_count} Installed]" if scx_count > 0 else "[SCX: Not Installed]"
+        )
+        self.scx_pill.add_css_class("sb-pill-active" if scx_count > 0 else "sb-pill-inactive")
+        self.scx_pill.set_valign(Gtk.Align.CENTER)
+        self.scx_row.add_suffix(self.scx_pill)
+
+        self.install_scx_button = Gtk.Button(
+            label="🔄 Update SCX" if scx_count > 0 else "⚡ Install SCX (.deb)"
+        )
+        self.install_scx_button.set_valign(Gtk.Align.CENTER)
+        if scx_count == 0:
+            self.install_scx_button.add_css_class("suggested-action")
+        self.install_scx_button.set_tooltip_text(
+            "Install or update precompiled sched-ext (scx-scheds_1.1.4_amd64.deb) userspace BPF schedulers on your system."
+        )
+        self.install_scx_button.connect("clicked", self.on_install_scx_clicked)
+        self.scx_row.add_suffix(self.install_scx_button)
+        self.step2_group.add(self.scx_row)
+
         # 5. Certificates & Packages Location Row
         self.cert_folder_row = Adw.ActionRow()
         self.cert_folder_row.set_title("MOK Certificates &amp; Packages Location")
@@ -349,8 +380,8 @@ class KernelUpdaterWindow(Adw.ApplicationWindow):
             "EEVDF: Earliest Eligible Virtual Deadline First. Standard upstream Linux kernel scheduler."
         )
         scheduler_options = [
-            "BORE (Burst-Oriented Response Enhancer) [Default]",
-            "EEVDF (Standard Linux Scheduler)"
+            "BORE + sched-ext (SCX) BPF Support [Default]",
+            "EEVDF + sched-ext (SCX) BPF Support"
         ]
         self.scheduler_row.set_model(Gtk.StringList.new(scheduler_options))
         self.scheduler_row.set_selected(0) # Default: BORE
@@ -944,6 +975,42 @@ class KernelUpdaterWindow(Adw.ApplicationWindow):
                 subprocess.Popen(self.kernel_manager._host_cmd(['xdg-open', out_dir]))
             except Exception as e:
                 self.log(f"[!] Could not open folder: {e}")
+
+    def on_install_scx_clicked(self, button):
+        self.set_buttons_sensitive(False)
+        self.install_scx_button.set_sensitive(False)
+        self.status_label.set_text("Installing sched-ext (SCX v1.1.4) BPF schedulers...")
+        self.progress_bar.set_fraction(0.2)
+        self.log_expander.set_expanded(True)
+
+        def run():
+            try:
+                self.kernel_manager.install_scx_schedulers(progress_callback=self.log)
+                GLib.idle_add(self.on_install_scx_complete, True, "sched-ext (SCX v1.1.4) BPF schedulers installed successfully!")
+            except Exception as e:
+                GLib.idle_add(self.on_install_scx_complete, False, str(e))
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def on_install_scx_complete(self, success, message):
+        self.set_buttons_sensitive(True)
+        self.install_scx_button.set_sensitive(True)
+        scx_st = self.kernel_manager.get_scx_status()
+        scx_count = scx_st.get("installed_count", 0)
+        self.scx_pill.set_label(f"[SCX: {scx_count} Installed]" if scx_count > 0 else "[SCX: Not Installed]")
+        if scx_count > 0:
+            self.scx_pill.remove_css_class("sb-pill-inactive")
+            self.scx_pill.add_css_class("sb-pill-active")
+            self.install_scx_button.set_label("🔄 Update SCX")
+            self.install_scx_button.remove_css_class("suggested-action")
+        if success:
+            self.progress_bar.set_fraction(1.0)
+            self.status_label.set_text(message)
+        else:
+            self.progress_bar.set_fraction(0.0)
+            self.status_label.set_text("SCX installation failed (see build log)")
+            self.log(f"[!] SCX installation error: {message}")
+        return False
 
     def on_install_deps_clicked(self, button):
         use_container = (self.build_mode_row.get_selected() == 1)

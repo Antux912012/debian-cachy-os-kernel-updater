@@ -49,6 +49,16 @@
     </screenshot>
   </screenshots>
   <releases>
+    <release version="1.1.7" date="2026-11-03">
+      <description>
+        <p>Version 1.1.7 release:</p>
+        <ul>
+          <li>Added full sched-ext (SCX v1.1.4) pluggable BPF CPU scheduler integration and bundled precompiled scx-scheds_1.1.4_amd64.deb package (scx_bpfland, scx_lavd, scx_flash, scx_rusty, scx_cosmos, scx_p2dq, scx_beerland, scx_rustland, scx_layered, scx_tickless, scx_cake, scx_eevdf, scx_mitosis, scx_rlfifo, and scxctl)</li>
+          <li>Preserved CONFIG_DEBUG_INFO_BTF=y and CONFIG_SCHED_CLASS_EXT=y when stripping debug symbols so compiled CachyOS kernels expose /sys/kernel/sched_ext without generating multi-gigabyte -dbg packages</li>
+          <li>Added one-click Install / Update SCX (.deb) action in the GTK4/Libadwaita GUI and --install-scx / --status-scx CLI flags</li>
+        </ul>
+      </description>
+    </release>
     <release version="1.1.6" date="2026-10-25">
       <description>
         <p>Version 1.1.6 release:</p>
