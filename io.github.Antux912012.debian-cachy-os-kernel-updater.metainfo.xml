@@ -28,7 +28,7 @@
   <url type="homepage">https://github.com/Antux912012/debian-cachy-os-kernel-updater</url>
   <url type="bugtracker">https://github.com/Antux912012/debian-cachy-os-kernel-updater/issues</url>
   <url type="vcs-browser">https://github.com/Antux912012/debian-cachy-os-kernel-updater</url>
-  <developer id="io.github.Antux912012">
+  <developer id="io.github.antux912012">
     <name>Antonio</name>
   </developer>
   <provides>
@@ -49,13 +49,14 @@
     </screenshot>
   </screenshots>
   <releases>
-    <release version="1.1.7" date="2026-11-03">
+    <release version="1.1.8" date="2026-11-04">
       <description>
-        <p>Version 1.1.7 release:</p>
+        <p>Version 1.1.8 release:</p>
         <ul>
-          <li>Added full sched-ext (SCX v1.1.4) pluggable BPF CPU scheduler integration and bundled precompiled scx-scheds_1.1.4_amd64.deb package (scx_bpfland, scx_lavd, scx_flash, scx_rusty, scx_cosmos, scx_p2dq, scx_beerland, scx_rustland, scx_layered, scx_tickless, scx_cake, scx_eevdf, scx_mitosis, scx_rlfifo, and scxctl)</li>
-          <li>Preserved CONFIG_DEBUG_INFO_BTF=y and CONFIG_SCHED_CLASS_EXT=y when stripping debug symbols so compiled CachyOS kernels expose /sys/kernel/sched_ext without generating multi-gigabyte -dbg packages</li>
-          <li>Added one-click Install / Update SCX (.deb) action in the GTK4/Libadwaita GUI and --install-scx / --status-scx CLI flags</li>
+          <li>Removed sched-ext (SCX) userspace BPF scheduler integration and bundled SCX packages to focus on native CachyOS BORE and EEVDF kernel schedulers</li>
+          <li>Restored full DEBUG_INFO_NONE debug symbol stripping when Strip Debug Symbols is enabled, significantly reducing disk footprint and compile times</li>
+          <li>Optimized kernel configuration sanitization by batching all scripts/config flags into a single execution</li>
+          <li>Audited and refactored codebase to remove duplicated dpkg status parsing, redundant MOK helper handlers, and dormant code</li>
         </ul>
       </description>
     </release>

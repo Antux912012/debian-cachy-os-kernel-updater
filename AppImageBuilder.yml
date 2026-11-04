@@ -8,7 +8,7 @@ AppDir:
     id: io.github.Antux912012.debian-cachy-os-kernel-updater
     name: Cachy-Kernel-Updater
     icon: io.github.Antux912012.debian-cachy-os-kernel-updater
-    version: 1.1.4
+    version: 1.1.8
 
   apt:
     arch: amd64

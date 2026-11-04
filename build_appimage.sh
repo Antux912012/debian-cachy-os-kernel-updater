@@ -7,7 +7,6 @@ cd "$DIR"
 echo "=== Preparing staging environment in AppDir ==="
 mkdir -p AppDir/usr/share/cachy-kernel-updater
 mkdir -p AppDir/usr/share/applications
-mkdir -p AppDir/usr/share/pixmaps
 mkdir -p AppDir/usr/share/icons/hicolor/scalable/apps
 mkdir -p AppDir/usr/share/icons/hicolor/256x256/apps
 mkdir -p AppDir/usr/share/icons/hicolor/512x512/apps
@@ -19,7 +18,6 @@ chmod 755 AppDir/usr/share/cachy-kernel-updater/sign-kernel.sh
 cp -v assets/io.github.Antux912012.debian-cachy-os-kernel-updater.svg AppDir/usr/share/icons/hicolor/scalable/apps/
 cp -v assets/logo_256.png AppDir/usr/share/icons/hicolor/256x256/apps/io.github.Antux912012.debian-cachy-os-kernel-updater.png
 cp -v assets/logo_512.png AppDir/usr/share/icons/hicolor/512x512/apps/io.github.Antux912012.debian-cachy-os-kernel-updater.png
-cp -v assets/logo_256.png AppDir/usr/share/pixmaps/io.github.Antux912012.debian-cachy-os-kernel-updater.png
 cp -v assets/logo_256.png AppDir/io.github.Antux912012.debian-cachy-os-kernel-updater.png
 cp -v assets/io.github.Antux912012.debian-cachy-os-kernel-updater.svg AppDir/io.github.Antux912012.debian-cachy-os-kernel-updater.svg
 

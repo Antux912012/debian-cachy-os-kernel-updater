@@ -2,12 +2,11 @@ import subprocess
 import requests
 import os
 import shutil
-import urllib.request
 import re
 import glob
 import stat
 
-APP_VERSION = "1.1.7"
+APP_VERSION = "1.1.8"
 
 class KernelManager:
     APP_VERSION = APP_VERSION
@@ -526,12 +525,9 @@ class KernelManager:
                 progress_callback(full_error_text)
             raise Exception(full_error_text)
 
-    def _check_dpkg_packages_missing(self, pkg_list: list) -> list:
-        """Checks a list of Debian packages on the host (or container if running natively) in one batch."""
-        if not pkg_list:
-            return []
+    def _read_dpkg_installed_set(self, include_provides: bool = True) -> set:
+        """Parses /var/lib/dpkg/status (or /run/host/var/lib/dpkg/status) and returns installed package names."""
         installed = set()
-        # 1. Try reading /run/host/var/lib/dpkg/status or /var/lib/dpkg/status directly for instant non-spawning check
         for status_file in ("/run/host/var/lib/dpkg/status", "/var/lib/dpkg/status"):
             if os.path.isfile(status_file):
                 try:
@@ -542,7 +538,7 @@ class KernelManager:
                         for line in f:
                             if line.startswith("Package: "):
                                 cur_pkg = line[9:].strip()
-                            elif line.startswith("Provides: "):
+                            elif include_provides and line.startswith("Provides: "):
                                 prov_raw = line[10:].strip()
                                 cur_provides = [p.strip().split()[0] for p in prov_raw.split(",") if p.strip()]
                             elif line.startswith("Status: "):
@@ -550,19 +546,28 @@ class KernelManager:
                             elif line == "\n":
                                 if cur_installed and cur_pkg:
                                     installed.add(cur_pkg)
-                                    for prov in cur_provides:
-                                        installed.add(prov)
+                                    if include_provides:
+                                        installed.update(cur_provides)
                                 cur_pkg = None
                                 cur_provides = []
                                 cur_installed = False
                         if cur_installed and cur_pkg:
                             installed.add(cur_pkg)
-                            for prov in cur_provides:
-                                installed.add(prov)
+                            if include_provides:
+                                installed.update(cur_provides)
                     if installed:
-                        return [p for p in pkg_list if p not in installed]
+                        return installed
                 except Exception:
                     pass
+        return installed
+
+    def _check_dpkg_packages_missing(self, pkg_list: list) -> list:
+        """Checks a list of Debian packages on the host (or container if running natively) in one batch."""
+        if not pkg_list:
+            return []
+        installed = self._read_dpkg_installed_set(include_provides=True)
+        if installed:
+            return [p for p in pkg_list if p not in installed]
 
         # 2. Fallback to dpkg-query via host bridge
         missing = []
@@ -866,7 +871,6 @@ WORKDIR /workspace
 
         # Clean the cachy-kernel-build folder with robust permission handling
         try:
-            import stat
             for root, dirs, files in os.walk(self.download_dir, topdown=False):
                 for name in files:
                     p = os.path.join(root, name)
@@ -1064,10 +1068,12 @@ WORKDIR /workspace
         # Recover saved config if available, otherwise use running CachyOS kernel or downloaded official config.
         # When building in container (Docker/Podman), always use the official CachyOS base config to build for ALL hardware.
         active_saved_cfg = self.saved_native_config_path if is_native else self.saved_config_path
+        config_copied = False
         if not use_container and os.path.exists(active_saved_cfg) and os.path.getsize(active_saved_cfg) > 1000:
             if progress_callback:
                 progress_callback(f"[✓] Recovering previously saved kernel configuration from {active_saved_cfg}...")
             shutil.copy(active_saved_cfg, config_dst)
+            config_copied = True
         elif not use_container:
             current_kernel = self.get_current_kernel_version()
             boot_cfg = f"/boot/config-{current_kernel}"
@@ -1075,22 +1081,21 @@ WORKDIR /workspace
                 if progress_callback:
                     progress_callback(f"[✓] Recovering configuration from running kernel ({boot_cfg})...")
                 shutil.copy(boot_cfg, config_dst)
-            else:
-                if progress_callback:
-                    progress_callback("Applying official CachyOS base kernel configuration...")
-                config_src = os.path.join(self.download_dir, "config")
-                if os.path.exists(config_src):
-                    shutil.copy(config_src, config_dst)
-                else:
-                    urllib.request.urlretrieve(self.cachy_config_raw, config_dst)
-        else:
+                config_copied = True
+
+        if not config_copied:
             if progress_callback:
-                progress_callback("[*] Container build (Docker/Podman): Applying official CachyOS base kernel configuration with full generic driver support for all hardware...")
+                if use_container:
+                    progress_callback("[*] Container build (Docker/Podman): Applying official CachyOS base kernel configuration with full generic driver support for all hardware...")
+                else:
+                    progress_callback("Applying official CachyOS base kernel configuration...")
             config_src = os.path.join(self.download_dir, "config")
             if os.path.exists(config_src):
                 shutil.copy(config_src, config_dst)
             else:
-                urllib.request.urlretrieve(self.cachy_config_raw, config_dst)
+                resp = self._http_get(self.cachy_config_raw, timeout=20)
+                with open(config_dst, "wb") as f:
+                    f.write(resp.content)
 
         if not use_container:
             missing_deps = self.check_build_dependencies(use_container=False)
@@ -1101,7 +1106,7 @@ WORKDIR /workspace
                     f"sudo apt-get install -y {' '.join(missing_deps)}"
                 )
 
-        # Apply necessary tweaks for Debian environment & sanitize .config
+        # Apply necessary tweaks for Debian environment & sanitize .config in a single batched invocation
         # 1. Remove Debian/Canonical hardcoded certificate paths (Prevents Makefile:2207 crash)
         # 2. Bypass build-time module signing (avoids ephemeral key/cert failures in containers)
         # 3. Keep signature verification support compiled into the kernel for post-build user signing
@@ -1125,15 +1130,14 @@ WORKDIR /workspace
         ]
 
         if strip_debug_symbols:
-            # Keep reduced DWARF + vmlinux BTF so sched-ext (CONFIG_SCHED_CLASS_EXT=y) works,
-            # while disabling split/module debug bloat and -dbg package generation.
             config_sanitize_cmd.extend([
-                '--disable', 'DEBUG_INFO_NONE',
-                '--enable', 'DEBUG_INFO',
-                '--enable', 'DEBUG_INFO_DWARF_TOOLCHAIN_DEFAULT',
-                '--enable', 'DEBUG_INFO_REDUCED',
-                '--enable', 'DEBUG_INFO_BTF',
+                '--enable', 'DEBUG_INFO_NONE',
+                '--disable', 'DEBUG_INFO',
+                '--disable', 'DEBUG_INFO_BTF',
                 '--disable', 'DEBUG_INFO_BTF_MODULES',
+                '--disable', 'DEBUG_INFO_DWARF_TOOLCHAIN_DEFAULT',
+                '--disable', 'DEBUG_INFO_DWARF4',
+                '--disable', 'DEBUG_INFO_DWARF5',
                 '--disable', 'DEBUG_INFO_SPLIT',
             ])
         else:
@@ -1143,35 +1147,32 @@ WORKDIR /workspace
                 '--enable', 'DEBUG_INFO_BTF',
             ])
 
-        self._run_cmd(['bash'] + config_sanitize_cmd, cwd=kernel_dir, progress_callback=None, host_exec=False)
-
-        # 2. CPU Scheduler Configuration (Default: BORE + sched-ext BPF support)
-        if cpu_scheduler in ('bore', 'bore_scx'):
-            self._run_cmd(['bash', 'scripts/config', '--enable', 'CONFIG_SCHED_BORE', '--enable', 'CONFIG_BPF_SYSCALL', '--enable', 'CONFIG_BPF_JIT', '--enable', 'CONFIG_DEBUG_INFO_BTF', '--enable', 'CONFIG_FTRACE', '--enable', 'CONFIG_KPROBES', '--enable', 'CONFIG_SCHED_CLASS_EXT'], cwd=kernel_dir, progress_callback=None, host_exec=False)
+        # 2. CPU Scheduler Configuration (Default: BORE)
+        if cpu_scheduler == 'bore':
+            config_sanitize_cmd.extend(['--enable', 'CONFIG_SCHED_BORE'])
         else:
-            self._run_cmd(['bash', 'scripts/config', '--disable', 'CONFIG_SCHED_BORE', '--enable', 'CONFIG_BPF_SYSCALL', '--enable', 'CONFIG_BPF_JIT', '--enable', 'CONFIG_DEBUG_INFO_BTF', '--enable', 'CONFIG_FTRACE', '--enable', 'CONFIG_KPROBES', '--enable', 'CONFIG_SCHED_CLASS_EXT'], cwd=kernel_dir, progress_callback=None, host_exec=False)
+            config_sanitize_cmd.extend(['--disable', 'CONFIG_SCHED_BORE'])
 
         # 3. Compiler & LTO Selection
         use_llvm = compiler_lto.startswith('clang')
         if compiler_lto in ('gcc_none', 'clang_none'):
-            self._run_cmd(['bash', 'scripts/config', '--disable', 'LTO_CLANG_THIN', '--disable', 'LTO_CLANG_FULL', '--enable', 'LTO_NONE'], cwd=kernel_dir, progress_callback=None, host_exec=False)
+            config_sanitize_cmd.extend(['--disable', 'LTO_CLANG_THIN', '--disable', 'LTO_CLANG_FULL', '--enable', 'LTO_NONE'])
         elif compiler_lto == 'clang_thin':
-            self._run_cmd(['bash', 'scripts/config', '--enable', 'LTO_CLANG', '--enable', 'LTO_CLANG_THIN', '--disable', 'LTO_NONE', '--disable', 'LTO_CLANG_FULL'], cwd=kernel_dir, progress_callback=None, host_exec=False)
+            config_sanitize_cmd.extend(['--enable', 'LTO_CLANG', '--enable', 'LTO_CLANG_THIN', '--disable', 'LTO_NONE', '--disable', 'LTO_CLANG_FULL'])
         elif compiler_lto == 'clang_full':
-            self._run_cmd(['bash', 'scripts/config', '--enable', 'LTO_CLANG', '--enable', 'LTO_CLANG_FULL', '--disable', 'LTO_NONE', '--disable', 'LTO_CLANG_THIN'], cwd=kernel_dir, progress_callback=None, host_exec=False)
+            config_sanitize_cmd.extend(['--enable', 'LTO_CLANG', '--enable', 'LTO_CLANG_FULL', '--disable', 'LTO_NONE', '--disable', 'LTO_CLANG_THIN'])
 
         # 4. Tick Rate & Preemption (Default: 1000 Hz + Full Tickless Idle)
-        if tick_rate == '1000':
-            self._run_cmd(['bash', 'scripts/config', '--disable', 'HZ_100', '--disable', 'HZ_250', '--disable', 'HZ_300', '--disable', 'HZ_500', '--disable', 'HZ_600', '--disable', 'HZ_750', '--enable', 'HZ_1000', '--set-val', 'HZ', '1000'], cwd=kernel_dir, progress_callback=None, host_exec=False)
-        elif tick_rate == '500':
-            self._run_cmd(['bash', 'scripts/config', '--disable', 'HZ_100', '--disable', 'HZ_250', '--disable', 'HZ_300', '--disable', 'HZ_600', '--disable', 'HZ_750', '--disable', 'HZ_1000', '--enable', 'HZ_500', '--set-val', 'HZ', '500'], cwd=kernel_dir, progress_callback=None, host_exec=False)
-        elif tick_rate == '300':
-            self._run_cmd(['bash', 'scripts/config', '--disable', 'HZ_100', '--disable', 'HZ_250', '--disable', 'HZ_500', '--disable', 'HZ_600', '--disable', 'HZ_750', '--disable', 'HZ_1000', '--enable', 'HZ_300', '--set-val', 'HZ', '300'], cwd=kernel_dir, progress_callback=None, host_exec=False)
-        elif tick_rate == '250':
-            self._run_cmd(['bash', 'scripts/config', '--disable', 'HZ_100', '--disable', 'HZ_300', '--disable', 'HZ_500', '--disable', 'HZ_600', '--disable', 'HZ_750', '--disable', 'HZ_1000', '--enable', 'HZ_250', '--set-val', 'HZ', '250'], cwd=kernel_dir, progress_callback=None, host_exec=False)
+        hz_options = ('100', '250', '300', '500', '600', '750', '1000')
+        if tick_rate in ('1000', '500', '300', '250'):
+            for hz in hz_options:
+                config_sanitize_cmd.extend(['--enable' if hz == tick_rate else '--disable', f'HZ_{hz}'])
+            config_sanitize_cmd.extend(['--set-val', 'HZ', tick_rate])
 
         if tickless:
-            self._run_cmd(['bash', 'scripts/config', '--enable', 'NO_HZ_IDLE', '--enable', 'NO_HZ', '--enable', 'NO_HZ_COMMON', '--disable', 'HZ_PERIODIC'], cwd=kernel_dir, progress_callback=None, host_exec=False)
+            config_sanitize_cmd.extend(['--enable', 'NO_HZ_IDLE', '--enable', 'NO_HZ', '--enable', 'NO_HZ_COMMON', '--disable', 'HZ_PERIODIC'])
+
+        self._run_cmd(['bash'] + config_sanitize_cmd, cwd=kernel_dir, progress_callback=None, host_exec=False)
 
         # Prepare container runner prefix if container build is selected
         container_prefix = []
@@ -1312,8 +1313,6 @@ WORKDIR /workspace
             # Essential filesystems
             ('enable', 'CONFIG_BPF_SYSCALL'),
             ('enable', 'CONFIG_BPF_JIT'),
-            ('enable', 'CONFIG_DEBUG_INFO_BTF'),
-            ('enable', 'CONFIG_SCHED_CLASS_EXT'),
             ('enable', 'CONFIG_EXT4_FS'),
             ('module', 'CONFIG_BTRFS_FS'),
             ('enable', 'CONFIG_VFAT_FS'),
@@ -1631,7 +1630,6 @@ WORKDIR /workspace
         if progress_callback:
             progress_callback(f"\n[*] Collecting generated Debian packages into:\n    {output_dir}")
 
-        import glob
         patterns = ["linux-image-*.deb", "linux-headers-*.deb", "linux-libc-dev-*.deb", "*.changes", "*.buildinfo"]
         found_files = []
         for pat in patterns:
@@ -1651,16 +1649,6 @@ WORKDIR /workspace
             except Exception as e:
                 if progress_callback:
                     progress_callback(f"    [!] Warning: could not copy {fname}: {e}")
-
-        # Stage bundled precompiled scx-scheds .deb into output_dir so it installs alongside the kernel
-        scx_deb_src = self.find_bundled_scx_deb()
-        if scx_deb_src and os.path.isfile(scx_deb_src):
-            try:
-                shutil.copy2(scx_deb_src, os.path.join(output_dir, os.path.basename(scx_deb_src)))
-                if progress_callback:
-                    progress_callback(f"    • Staged {os.path.basename(scx_deb_src)} (sched-ext BPF schedulers)")
-            except Exception:
-                pass
 
         # Also preserve .config in the output directory
         if os.path.exists(config_dst):
@@ -1687,7 +1675,7 @@ echo "=== Installing {kernel_brand} ==="
 echo "Package directory: $DIR"
 
 DEBS=()
-for f in "$DIR"/linux-image-*.deb "$DIR"/linux-headers-*.deb "$DIR"/scx-scheds_*.deb; do
+for f in "$DIR"/linux-image-*.deb "$DIR"/linux-headers-*.deb; do
     if [ -f "$f" ] && [[ "$f" != *"-dbg"* ]]; then
         DEBS+=("$f")
     fi
@@ -1759,7 +1747,7 @@ echo "=========================================================="
             os.path.join(os.path.dirname(os.path.abspath(__file__)), "sign-kernel.sh"),
             staged_script,
             "/usr/share/cachy-kernel-updater/sign-kernel.sh",
-            os.path.expanduser("~/Projects/debian-cachy-kernel-updater/sign-kernel.sh")
+            os.path.expanduser("~/Projects/debian-cachy-os-kernel-updater/sign-kernel.sh")
         ]
         for p in candidates:
             if os.path.isfile(p):
@@ -1868,17 +1856,12 @@ echo "=========================================================="
             "pem_path": pem_path
         }
 
-    def get_secure_boot_and_mok_status(self, output_dir: str = None) -> dict:
-        """Alias for get_mok_status."""
-        return self.get_mok_status(output_dir)
-
     def get_secure_boot_status(self, output_dir: str = None) -> bool:
         """Returns True if UEFI Secure Boot is active."""
         return self.get_mok_status(output_dir)["secure_boot_enabled"]
 
     def find_deb_directory(self):
         """Locates the directory containing compiled linux-image-*.deb packages."""
-        import glob
         search_dirs = []
         if self.last_output_dir and os.path.isdir(self.last_output_dir):
             search_dirs.append(self.last_output_dir)
@@ -1909,6 +1892,28 @@ echo "=========================================================="
             if candidates:
                 return sdir
         return None
+
+    def _run_sign_kernel_helper(self, cmd: list, cwd: str, success_msg: str, failure_prefix: str, log_callback=None) -> tuple:
+        """Executes sign-kernel.sh via pkexec and extracts MOK_STATUS from its output stream."""
+        mok_status = "UNKNOWN"
+        try:
+            def stream_handler(line):
+                nonlocal mok_status
+                if "MOK_STATUS=" in line:
+                    for token in line.split():
+                        if token.startswith("MOK_STATUS="):
+                            mok_status = token.split("=", 1)[1].strip()
+                if log_callback:
+                    log_callback(line)
+
+            self._run_cmd(cmd, cwd=cwd, progress_callback=stream_handler)
+            if log_callback and success_msg:
+                log_callback(success_msg)
+            return True, mok_status
+        except Exception as e:
+            if log_callback:
+                log_callback(f"\n[!] {failure_prefix}: {e}\n")
+            return False, f"FAILED: {e}"
 
     def reset_and_recreate_mok_keys(self, output_dir: str = None, mok_password: str = "", log_callback=None) -> tuple:
         """
@@ -1944,25 +1949,13 @@ echo "=========================================================="
             log_callback(f"    Privileged Helper: {script_path}")
             log_callback("=======================================================\n")
 
-        mok_status = "UNKNOWN"
-        try:
-            def stream_handler(line):
-                nonlocal mok_status
-                if "MOK_STATUS=" in line:
-                    for token in line.split():
-                        if token.startswith("MOK_STATUS="):
-                            mok_status = token.split("=", 1)[1].strip()
-                if log_callback:
-                    log_callback(line)
-
-            self._run_cmd(cmd, cwd=target_dir, progress_callback=stream_handler)
-            if log_callback:
-                log_callback("\n[✓] MOK keys reset and recreated successfully in output folder!\n")
-            return True, mok_status
-        except Exception as e:
-            if log_callback:
-                log_callback(f"\n[!] Reset and recreate MOK keys failed: {e}\n")
-            return False, f"FAILED: {e}"
+        return self._run_sign_kernel_helper(
+            cmd=cmd,
+            cwd=target_dir,
+            success_msg="\n[✓] MOK keys reset and recreated successfully in output folder!\n",
+            failure_prefix="Reset and recreate MOK keys failed",
+            log_callback=log_callback
+        )
 
     def install_and_sign_kernel_debs(self, deb_dir: str = None, sign_enabled: bool = True, mok_password: str = "", log_callback=None) -> tuple:
         """
@@ -1997,28 +1990,15 @@ echo "=========================================================="
                 log_callback(f"    Privileged Helper: {script_path}")
                 log_callback("=======================================================\n")
 
-            mok_status = "UNKNOWN"
-            try:
-                def stream_handler(line):
-                    nonlocal mok_status
-                    if "MOK_STATUS=" in line:
-                        for token in line.split():
-                            if token.startswith("MOK_STATUS="):
-                                mok_status = token.split("=", 1)[1].strip()
-                    if log_callback:
-                        log_callback(line)
-
-                self._run_cmd(cmd, cwd=target_dir, progress_callback=stream_handler)
-                if log_callback:
-                    log_callback("\n[✓] Package installation and Secure Boot signing completed successfully!\n")
-                return True, mok_status
-            except Exception as e:
-                if log_callback:
-                    log_callback(f"\n[!] Installation and signing failed: {e}\n")
-                return False, f"FAILED: {e}"
+            return self._run_sign_kernel_helper(
+                cmd=cmd,
+                cwd=target_dir,
+                success_msg="\n[✓] Package installation and Secure Boot signing completed successfully!\n",
+                failure_prefix="Installation and signing failed",
+                log_callback=log_callback
+            )
         else:
             # Install without signing
-            import glob
             deb_files = glob.glob(os.path.join(target_dir, "linux-image-*.deb"))
             deb_files += glob.glob(os.path.join(target_dir, "linux-headers-*.deb"))
             deb_files = [f for f in deb_files if '-dbg' not in f]
@@ -2084,95 +2064,21 @@ echo "=========================================================="
             log_callback(f"    Privileged Helper: {script_path}")
             log_callback("=======================================================\n")
 
-        mok_status = "UNKNOWN"
-        try:
-            def stream_handler(line):
-                nonlocal mok_status
-                if "MOK_STATUS=" in line:
-                    for token in line.split():
-                        if token.startswith("MOK_STATUS="):
-                            mok_status = token.split("=", 1)[1].strip()
-                if log_callback:
-                    log_callback(line)
-
-            self._run_cmd(cmd, cwd=target_dir, progress_callback=stream_handler)
-            if log_callback:
-                log_callback("\n[✓] Post-installation Secure Boot signing completed successfully!\n")
-            return True, mok_status
-        except Exception as e:
-            if log_callback:
-                log_callback(f"\n[!] Secure Boot signing failed: {e}\n")
-            return False, f"FAILED: {e}"
-
-    sign_installed_boot_kernel = sign_existing_installed_kernel
-    sign_installed_kernel = sign_existing_installed_kernel
-    sign_kernel_secureboot = sign_existing_installed_kernel
-
-    def ensure_mok_keys(self, output_dir: str = None) -> dict:
-        """Returns co-located MOK certificate paths in output_dir, generating them if missing."""
-        target_dir = output_dir or self.find_deb_directory() or self.last_output_dir or self.get_output_kernel_dir(is_native=False)
-        if not target_dir:
-            target_dir = self.output_base_dir
-        os.makedirs(target_dir, exist_ok=True)
-        priv_path = os.path.join(target_dir, "MOK.priv")
-        der_path = os.path.join(target_dir, "MOK.der")
-        pem_path = os.path.join(target_dir, "MOK.pem")
-        if not (os.path.isfile(priv_path) and os.path.isfile(der_path) and os.path.isfile(pem_path)):
-            try:
-                self._run_host_subproc([
-                    "openssl", "req", "-new", "-x509", "-newkey", "rsa:2048",
-                    "-keyout", priv_path, "-outform", "DER", "-out", der_path,
-                    "-nodes", "-days", "36500", "-subj", "/CN=Debian CachyOS Kernel Signing Key/"
-                ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                self._run_host_subproc([
-                    "openssl", "x509", "-inform", "DER", "-in", der_path,
-                    "-outform", "PEM", "-out", pem_path
-                ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                os.chmod(priv_path, 0o600)
-                os.chmod(der_path, 0o644)
-                os.chmod(pem_path, 0o644)
-            except Exception:
-                pass
-        return {
-            "priv": priv_path,
-            "der": der_path,
-            "pem": pem_path
-        }
-
-    def is_mok_enrolled(self, der_path: str = None) -> bool:
-        """Checks if MOK key is enrolled in UEFI NVRAM."""
-        status = self.get_mok_status()
-        return status["key_enrolled"]
-
-    def enroll_mok_key(self, der_path: str = None, password: str = "") -> tuple:
-        """Enrolls MOK key using the atomic root helper."""
-        return self.sign_existing_installed_kernel(kernel_version="auto", mok_password=password)
-
-    enroll_mok_key_gui = enroll_mok_key
+        return self._run_sign_kernel_helper(
+            cmd=cmd,
+            cwd=target_dir,
+            success_msg="\n[✓] Post-installation Secure Boot signing completed successfully!\n",
+            failure_prefix="Secure Boot signing failed",
+            log_callback=log_callback
+        )
 
     def get_installed_kernels(self):
         """Returns a list of installed linux-image packages on the host."""
-        packages = []
-        for status_file in ("/run/host/var/lib/dpkg/status", "/var/lib/dpkg/status"):
-            if os.path.isfile(status_file):
-                try:
-                    with open(status_file, "r", encoding="utf-8", errors="ignore") as f:
-                        cur_pkg = None
-                        cur_installed = False
-                        for line in f:
-                            if line.startswith("Package: "):
-                                cur_pkg = line[9:].strip()
-                            elif line.startswith("Status: "):
-                                cur_installed = ("install ok installed" in line)
-                            elif line == "\n":
-                                if cur_installed and cur_pkg and cur_pkg.startswith("linux-image-") and "dbg" not in cur_pkg:
-                                    packages.append(cur_pkg)
-                                cur_pkg = None
-                                cur_installed = False
-                    if packages:
-                        return sorted(set(packages))
-                except Exception:
-                    pass
+        installed_set = self._read_dpkg_installed_set(include_provides=False)
+        packages = [pkg for pkg in installed_set if pkg.startswith("linux-image-") and "dbg" not in pkg]
+        if packages:
+            return sorted(packages)
+
         try:
             res = self._run_host_subproc(
                 ['dpkg-query', '-W', '-f=${binary:Package}\\n', 'linux-image-*'],
@@ -2206,180 +2112,12 @@ echo "=========================================================="
                 progress_callback(f"Failed to remove {package_name}: {e}")
             return False
 
-    def sign_deb_packages(self, deb_dir=None, gpg_key_id=None, progress_callback=None):
-        """Signs the compiled .deb packages using GPG."""
-        candidates = [
-            os.path.join(self.config_dir, "sign-kernel.sh"),
-            os.path.join(os.path.dirname(os.path.abspath(__file__)), "sign-kernel.sh"),
-            "/usr/share/cachy-kernel-updater/sign-kernel.sh",
-            os.path.expanduser("~/Projects/debian-cachy-kernel-updater/sign-kernel.sh")
-        ]
-        script_path = None
-        for p in candidates:
-            if os.path.isfile(p):
-                script_path = p
-                break
-        if not script_path:
-            raise Exception("sign-kernel.sh script not found. Please ensure sign-kernel.sh exists in application directory.")
-
-        target_dir = deb_dir or self.last_output_dir
-        if not target_dir or not os.path.isdir(target_dir):
-            for candidate in [self.get_output_kernel_dir(is_native=True), self.get_output_kernel_dir(is_native=False)]:
-                if os.path.isdir(candidate):
-                    target_dir = candidate
-                    break
-
-        if not target_dir or not os.path.isdir(target_dir):
-            raise Exception("Debian packages directory not found. Please compile the kernel first.")
-
-        cmd = [script_path, "--debs", target_dir]
-        if gpg_key_id:
-            cmd.append(gpg_key_id)
-
-        if progress_callback:
-            progress_callback("\n=======================================================")
-            progress_callback(f"[*] Initiating .deb GPG package signing for: {target_dir}")
-            progress_callback("=======================================================\n")
-        self._run_cmd(cmd, progress_callback=progress_callback)
-        return True
-
-
-
-    SCX_VERSION = "1.1.4"
-    SCX_SCHEDULERS = [
-        "scx_bpfland", "scx_lavd", "scx_flash", "scx_rusty", "scx_cosmos",
-        "scx_p2dq", "scx_beerland", "scx_rustland", "scx_layered",
-        "scx_tickless", "scx_cake", "scx_eevdf", "scx_mitosis", "scx_rlfifo"
-    ]
-
-    def find_bundled_scx_deb(self) -> str:
-        """Locates the bundled precompiled scx-scheds_1.1.4_amd64.deb package."""
-        deb_name = f"scx-scheds_{self.SCX_VERSION}_amd64.deb"
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        candidates = [
-            os.path.join(base_dir, "assets", "scx", deb_name),
-            f"/usr/share/cachy-kernel-updater/assets/scx/{deb_name}",
-            f"/app/share/cachy-kernel-updater/assets/scx/{deb_name}",
-            os.path.join(self.config_dir, deb_name),
-        ]
-        appdir = os.environ.get("APPDIR")
-        if appdir:
-            candidates.insert(0, os.path.join(appdir, "usr/share/cachy-kernel-updater/assets/scx", deb_name))
-        for p in candidates:
-            if os.path.isfile(p):
-                return p
-        return ""
-
-    def get_scx_status(self) -> dict:
-        """Checks kernel sched_ext sysfs state and installed scx_* binaries on the host."""
-        state_paths = ("/run/host/sys/kernel/sched_ext/state", "/sys/kernel/sched_ext/state")
-        ops_paths = ("/run/host/sys/kernel/sched_ext/root/ops", "/sys/kernel/sched_ext/root/ops")
-        kernel_supported = False
-        sysfs_state = "unavailable"
-        active_ops = "none"
-
-        for sp in state_paths:
-            if os.path.exists(sp):
-                kernel_supported = True
-                try:
-                    with open(sp, "r") as f:
-                        sysfs_state = f.read().strip()
-                except Exception:
-                    sysfs_state = "disabled"
-                break
-
-        for op in ops_paths:
-            if os.path.exists(op):
-                try:
-                    with open(op, "r") as f:
-                        val = f.read().strip()
-                        if val:
-                            active_ops = val
-                except Exception:
-                    pass
-                break
-
-        installed = []
-        for sched in self.SCX_SCHEDULERS:
-            if self._which_host(sched) or os.path.isfile(f"/run/host/usr/bin/{sched}") or os.path.isfile(f"/usr/bin/{sched}"):
-                installed.append(sched)
-
-        return {
-            "kernel_supported": kernel_supported,
-            "state": sysfs_state,
-            "active_ops": active_ops,
-            "installed_schedulers": installed,
-            "installed_count": len(installed),
-            "bundled_deb": self.find_bundled_scx_deb(),
-        }
-
-    def install_scx_schedulers(self, progress_callback=None) -> bool:
-        """
-        Installs sched-ext (scx v1.1.4) userspace BPF schedulers on the host system:
-        1. Uses bundled precompiled scx-scheds_1.1.4_amd64.deb if available
-        2. Downloads scx-scheds_1.1.4_amd64.deb from GitHub Releases
-        3. Fallback: Compiles from https://github.com/sched-ext/scx.git via Cargo
-        """
-        if progress_callback:
-            progress_callback("\n=======================================================")
-            progress_callback(f"[*] Installing sched-ext (SCX v{self.SCX_VERSION}) Userspace BPF Schedulers...")
-            progress_callback("=======================================================")
-
-        os.makedirs(self.download_dir, exist_ok=True)
-        staged_deb = os.path.join(self.download_dir, f"scx-scheds_{self.SCX_VERSION}_amd64.deb")
-
-        bundled_deb = self.find_bundled_scx_deb()
-        if bundled_deb and os.path.isfile(bundled_deb):
-            shutil.copy2(bundled_deb, staged_deb)
-            if progress_callback:
-                progress_callback(f"[✓] Found bundled precompiled package: {os.path.basename(bundled_deb)}")
-
-        # Also copy into kernel output folder so future kernel installs include it
-        try:
-            out_dir = self.last_output_dir or self.get_output_kernel_dir(is_native=False)
-            if out_dir and os.path.isfile(staged_deb):
-                os.makedirs(out_dir, exist_ok=True)
-                shutil.copy2(staged_deb, os.path.join(out_dir, os.path.basename(staged_deb)))
-        except Exception:
-            pass
-
-        deb_url_1 = f"https://github.com/Antux912012/debian-cachy-os-kernel-updater/releases/latest/download/scx-scheds_{self.SCX_VERSION}_amd64.deb"
-        deb_url_2 = f"https://github.com/Antux912012/mithrandir/releases/latest/download/scx-scheds_{self.SCX_VERSION}_amd64.deb"
-
-        install_script = f"""set -e
-export DEBIAN_FRONTEND=noninteractive
-if [ -f "{staged_deb}" ]; then
-    echo "[*] Installing staged {os.path.basename(staged_deb)} via dpkg..."
-    dpkg -i "{staged_deb}" || apt-get install -f -y
-elif curl -fsSL "{deb_url_1}" -o "{staged_deb}" || curl -fsSL "{deb_url_2}" -o "{staged_deb}"; then
-    echo "[*] Installing downloaded {os.path.basename(staged_deb)} from GitHub Releases..."
-    dpkg -i "{staged_deb}" || apt-get install -f -y
-else
-    echo "[*] Building sched-ext v{self.SCX_VERSION} from source via Cargo..."
-    apt-get update && apt-get install -y git build-essential pkg-config clang llvm libbpf-dev libelf-dev libzstd-dev zlib1g-dev protobuf-compiler libseccomp-dev cargo rustc
-    rm -rf /tmp/cachy-scx-src
-    git clone --branch v{self.SCX_VERSION} --depth 1 https://github.com/sched-ext/scx.git /tmp/cachy-scx-src
-    cd /tmp/cachy-scx-src
-    cargo build --profile=release-tiny -p scx_bpfland -p scx_lavd -p scx_flash -p scx_rusty -p scx_cosmos -p scx_p2dq -p scx_beerland -p scx_rustland -p scx_layered -p scx_tickless -p scx_cake -p scx_eevdf -p scx_mitosis -p scx_rlfifo
-    install -m 0755 target/release-tiny/scx_* /usr/bin/
-    rm -rf /tmp/cachy-scx-src
-fi
-"""
-        self._run_cmd(["pkexec", "bash", "-c", install_script], cwd="/tmp", progress_callback=progress_callback)
-        if progress_callback:
-            status = self.get_scx_status()
-            progress_callback(f"\n[✓] sched-ext (SCX v{self.SCX_VERSION}) installed! ({status['installed_count']} schedulers available in /usr/bin)\n")
-        return True
-
-
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser(description="Debian CachyOS Kernel Manager CLI")
     parser.add_argument('--check', action='store_true', help="Check for latest CachyOS kernel version")
     parser.add_argument('--status-sb', action='store_true', help="Check UEFI Secure Boot status")
     parser.add_argument('--install-deps', action='store_true', help="Install required build dependencies")
-    parser.add_argument('--install-scx', action='store_true', help="Install precompiled sched-ext (SCX v1.1.4) BPF schedulers")
-    parser.add_argument('--status-scx', action='store_true', help="Check sched-ext (SCX) kernel and package status")
     parser.add_argument('--container', action='store_true', help="Use container environment (Podman/Docker)")
     parser.add_argument('--optimize', action='store_true', help="Optimize kernel compilation for local system (-march=native)")
     parser.add_argument('--build', action='store_true', help="Download and compile the latest CachyOS kernel")
@@ -2387,11 +2125,9 @@ if __name__ == '__main__':
     parser.add_argument('--no-sign', action='store_true', help="Skip Secure Boot MOK signing during installation")
     parser.add_argument('--rollback', nargs='?', const='', help="Purge/rollback an installed kernel package")
     parser.add_argument('--sign-mok', nargs='?', const='', help="Sign installed kernel in /boot for UEFI Secure Boot (MOK)")
-    parser.add_argument('--sign-deb-mok', metavar='DIR', nargs='?', const='', help="Sign kernel inside built .deb packages with MOK")
+    parser.add_argument('--sign-deb-mok', metavar='DIR', nargs='?', const='', help="Sign kernel using MOK certificates in target directory")
     parser.add_argument('--enroll-mok', action='store_true', help="Enroll MOK key into UEFI")
     parser.add_argument('--reset-mok', action='store_true', help="Cancel previous MOK enrollment, delete old certificates, generate fresh keypair in output folder, and re-sign kernel")
-    parser.add_argument('--sign-debs', nargs='?', const='', help="Sign .deb packages with GPG (specify folder or default)")
-    parser.add_argument('--gpg-key', help="GPG Key ID for signing .deb packages")
 
     args = parser.parse_args()
     km = KernelManager()
@@ -2406,12 +2142,6 @@ if __name__ == '__main__':
     elif args.status_sb:
         sb = km.get_secure_boot_status()
         print(f"UEFI Secure Boot: {'ENABLED' if sb else 'DISABLED'}")
-    elif args.status_scx:
-        st = km.get_scx_status()
-        print(f"Kernel sched_ext supported: {st['kernel_supported']} (state: {st['state']}, active: {st['active_ops']})")
-        print(f"Installed SCX schedulers ({st['installed_count']}): {st['installed_schedulers']}")
-    elif args.install_scx:
-        km.install_scx_schedulers(progress_callback=cli_log)
     elif args.install_deps:
         km.install_build_dependencies(progress_callback=cli_log, use_container=args.container)
     elif args.build:
@@ -2426,22 +2156,18 @@ if __name__ == '__main__':
             print("Installed kernels:", km.get_installed_kernels())
     elif args.sign_deb_mok is not None:
         target_dir = args.sign_deb_mok or km.last_output_dir or km.get_output_kernel_dir()
-        km.sign_built_deb_packages(target_dir, log_callback=cli_log)
+        km.sign_existing_installed_kernel(output_dir=target_dir, log_callback=cli_log)
     elif args.enroll_mok:
-        keys = km.ensure_mok_keys()
-        der_path = keys["der"]
         import getpass
         pwd = getpass.getpass("Enter one-time MOK enrollment password (8-16 chars): ")
-        success, msg = km.enroll_mok_key(der_path, pwd)
-        print(msg)
+        success, msg = km.sign_existing_installed_kernel(kernel_version="auto", mok_password=pwd, log_callback=cli_log)
+        print(f"Enrollment result: {success} ({msg})")
     elif args.reset_mok:
         import getpass
         pwd = getpass.getpass("Enter one-time MOK enrollment password (8-16 chars): ")
         success, msg = km.reset_and_recreate_mok_keys(mok_password=pwd, log_callback=cli_log)
         print(f"Reset result: {success} ({msg})")
     elif args.sign_mok is not None:
-        km.sign_installed_kernel(kernel_version=args.sign_mok or None, log_callback=cli_log)
-    elif args.sign_debs is not None:
-        km.sign_deb_packages(deb_dir=args.sign_debs or None, gpg_key_id=args.gpg_key, progress_callback=cli_log)
+        km.sign_existing_installed_kernel(kernel_version=args.sign_mok or "auto", log_callback=cli_log)
     else:
         parser.print_help()

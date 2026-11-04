@@ -7,7 +7,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
-DEV_ENV="/home/antonio/Projects/dev-env.sh"
+DEV_ENV="$(cd "${PROJECT_DIR}/.." && pwd)/dev-env.sh"
 APP_ID="io.github.Antux912012.debian-cachy-os-kernel-updater"
 GITHUB_USER="Antux912012"
 
@@ -114,7 +114,7 @@ if [ "$SKIP_BUILD" = false ]; then
     echo "[3/6] Running desktop/AppStream validation & package builds inside Podman (dev-debian)..."
     "$DEV_ENV" debian run bash -c "
         set -e
-        cd /workspace/debian-cachy-kernel-updater
+        cd /workspace/debian-cachy-os-kernel-updater
         desktop-file-validate ${APP_ID}.desktop
         appstreamcli validate --pedantic --explain ${APP_ID}.metainfo.xml
         ./build_deb.sh

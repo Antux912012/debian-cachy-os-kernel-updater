@@ -293,10 +293,6 @@ if [[ "$ACTION" == "--install-and-sign" ]]; then
     for deb in "$OUTPUT_DIR"/linux-headers-*.deb; do
         HEADER_DEBS+=("$deb")
     done
-    SCX_DEBS=()
-    for deb in "$OUTPUT_DIR"/scx-scheds_*.deb; do
-        [ -f "$deb" ] && SCX_DEBS+=("$deb")
-    done
     shopt -u nullglob
 
     if [[ ${#IMAGE_DEBS[@]} -eq 0 ]]; then
@@ -328,7 +324,7 @@ if [[ "$ACTION" == "--install-and-sign" ]]; then
     fi
 
     log_info "Installing kernel .deb packages via dpkg -i..."
-    DEBIAN_FRONTEND=noninteractive dpkg -i "$LATEST_IMAGE_DEB" "${HEADER_DEBS[@]}" "${SCX_DEBS[@]}" || {
+    DEBIAN_FRONTEND=noninteractive dpkg -i "$LATEST_IMAGE_DEB" "${HEADER_DEBS[@]}" || {
         log_warn "Resolving dependencies with apt-get install -f..."
         DEBIAN_FRONTEND=noninteractive apt-get install -f -y
     }

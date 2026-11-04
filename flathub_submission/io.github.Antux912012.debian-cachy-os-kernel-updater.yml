@@ -77,5 +77,5 @@ modules:
     sources:
       - type: git
         url: https://github.com/Antux912012/debian-cachy-os-kernel-updater.git
-        tag: v1.1.6
-        commit: a877046a7333b50bba5e3d7403cb0894fbe79781
+        tag: v1.1.8
+        commit: a79fa0109ea45c6df553f1f24aa03b99f9305806

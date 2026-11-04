@@ -11,11 +11,11 @@ from gi.repository import Gtk, Adw, GLib, Gdk, Gio
 
 from kernel_manager import KernelManager
 
-APP_VERSION = "1.1.7"
+APP_VERSION = "1.1.8"
 
 class KernelUpdaterWindow(Adw.ApplicationWindow):
     def __init__(self, app):
-        super().__init__(application=app, title="Debian CachyOS Kernel Updater")
+        super().__init__(application=app, title="Kernel Updater for CachyOS on Debian")
         self.set_default_size(860, 720)
         self.set_decorated(True)
         self.set_resizable(True)
@@ -32,12 +32,9 @@ class KernelUpdaterWindow(Adw.ApplicationWindow):
             appdir = os.environ.get("APPDIR")
             if appdir:
                 icon_theme.add_search_path(os.path.join(appdir, "usr/share/icons"))
-                icon_theme.add_search_path(os.path.join(appdir, "usr/share/pixmaps"))
             # Standard host, Flatpak and local assets locations
             icon_theme.add_search_path("/app/share/icons")
-            icon_theme.add_search_path("/app/share/pixmaps")
             icon_theme.add_search_path("/usr/share/icons")
-            icon_theme.add_search_path("/usr/share/pixmaps")
             icon_theme.add_search_path("/usr/local/share/icons")
             icon_theme.add_search_path(os.path.expanduser("~/.local/share/icons"))
             local_assets = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
@@ -109,13 +106,14 @@ class KernelUpdaterWindow(Adw.ApplicationWindow):
         banner_row.set_margin_end(16)
 
         # Application Logo Image in Banner
-        logo_png_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "logo_128.png")
-        if not os.path.exists(logo_png_path):
-            logo_png_path = "/usr/share/pixmaps/io.github.Antux912012.debian-cachy-os-kernel-updater.png"
-        if not os.path.exists(logo_png_path):
-            logo_png_path = "/app/share/pixmaps/io.github.Antux912012.debian-cachy-os-kernel-updater.png"
+        logo_candidates = [
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "logo_128.png"),
+            "/app/share/icons/hicolor/128x128/apps/io.github.Antux912012.debian-cachy-os-kernel-updater.png",
+            "/usr/share/icons/hicolor/128x128/apps/io.github.Antux912012.debian-cachy-os-kernel-updater.png",
+        ]
+        logo_png_path = next((p for p in logo_candidates if os.path.exists(p)), "")
 
-        if os.path.exists(logo_png_path):
+        if logo_png_path:
             self.banner_logo = Gtk.Image.new_from_file(logo_png_path)
         else:
             self.banner_logo = Gtk.Image.new_from_icon_name("io.github.Antux912012.debian-cachy-os-kernel-updater")
@@ -265,37 +263,6 @@ class KernelUpdaterWindow(Adw.ApplicationWindow):
         self.sign_postinst_row.add_suffix(self.sb_row_pill)
         self.step2_group.add(self.sign_postinst_row)
 
-        # 4b. Pluggable sched-ext (SCX v1.1.4) BPF Schedulers Row
-        scx_st = self.kernel_manager.get_scx_status()
-        self.scx_row = Adw.ActionRow()
-        self.scx_row.set_title("sched-ext (SCX v1.1.4) Userspace BPF Schedulers")
-        self.scx_row.set_subtitle(
-            "Bundles & installs scx_bpfland, scx_lavd, scx_flash, scx_rusty, scx_cosmos, scx_p2dq, scx_cake, and scxctl."
-        )
-        self.scx_row.set_tooltip_text(
-            "Installs precompiled sched-ext (scx v1.1.4) BPF schedulers (.deb) and enables CONFIG_SCHED_CLASS_EXT=y in compiled kernels."
-        )
-        scx_count = scx_st.get("installed_count", 0)
-        self.scx_pill = Gtk.Label(
-            label=f"[SCX: {scx_count} Installed]" if scx_count > 0 else "[SCX: Not Installed]"
-        )
-        self.scx_pill.add_css_class("sb-pill-active" if scx_count > 0 else "sb-pill-inactive")
-        self.scx_pill.set_valign(Gtk.Align.CENTER)
-        self.scx_row.add_suffix(self.scx_pill)
-
-        self.install_scx_button = Gtk.Button(
-            label="🔄 Update SCX" if scx_count > 0 else "⚡ Install SCX (.deb)"
-        )
-        self.install_scx_button.set_valign(Gtk.Align.CENTER)
-        if scx_count == 0:
-            self.install_scx_button.add_css_class("suggested-action")
-        self.install_scx_button.set_tooltip_text(
-            "Install or update precompiled sched-ext (scx-scheds_1.1.4_amd64.deb) userspace BPF schedulers on your system."
-        )
-        self.install_scx_button.connect("clicked", self.on_install_scx_clicked)
-        self.scx_row.add_suffix(self.install_scx_button)
-        self.step2_group.add(self.scx_row)
-
         # 5. Certificates & Packages Location Row
         self.cert_folder_row = Adw.ActionRow()
         self.cert_folder_row.set_title("MOK Certificates &amp; Packages Location")
@@ -380,8 +347,8 @@ class KernelUpdaterWindow(Adw.ApplicationWindow):
             "EEVDF: Earliest Eligible Virtual Deadline First. Standard upstream Linux kernel scheduler."
         )
         scheduler_options = [
-            "BORE + sched-ext (SCX) BPF Support [Default]",
-            "EEVDF + sched-ext (SCX) BPF Support"
+            "BORE (Burst-Oriented Response Enhancer) [Default]",
+            "EEVDF (Standard Linux Scheduler)"
         ]
         self.scheduler_row.set_model(Gtk.StringList.new(scheduler_options))
         self.scheduler_row.set_selected(0) # Default: BORE
@@ -619,26 +586,19 @@ class KernelUpdaterWindow(Adw.ApplicationWindow):
         self.on_check_updates_clicked(None)
 
     def on_about_clicked(self, button):
-        """Displays modern Libadwaita About dialog with the new logo and version."""
-        if hasattr(Adw, "AboutDialog"):
-            about = Adw.AboutDialog()
-            about.set_application_name("Debian CachyOS Kernel Updater")
-            about.set_application_icon("io.github.Antux912012.debian-cachy-os-kernel-updater")
-            about.set_version(APP_VERSION)
-            about.set_developer_name("Antonio")
-            about.set_comments("Modern GTK4/Adwaita tool to compile, install, optimize, and sign CachyOS kernels on Debian systems.")
-            about.set_website("https://github.com/Antux912012/debian-cachy-kernel-updater")
-            about.set_license_type(Gtk.License.GPL_3_0)
+        """Displays modern Libadwaita About dialog with the application logo and version."""
+        use_dialog = hasattr(Adw, "AboutDialog")
+        about = Adw.AboutDialog() if use_dialog else Adw.AboutWindow(transient_for=self)
+        about.set_application_name("Kernel Updater for CachyOS on Debian")
+        about.set_application_icon("io.github.Antux912012.debian-cachy-os-kernel-updater")
+        about.set_version(APP_VERSION)
+        about.set_developer_name("Antonio")
+        about.set_comments("Modern GTK4/Adwaita tool to compile, install, optimize, and sign CachyOS kernels on Debian systems.")
+        about.set_website("https://github.com/Antux912012/debian-cachy-os-kernel-updater")
+        about.set_license_type(Gtk.License.GPL_3_0)
+        if use_dialog:
             about.present(self)
-        elif hasattr(Adw, "AboutWindow"):
-            about = Adw.AboutWindow(transient_for=self)
-            about.set_application_name("Debian CachyOS Kernel Updater")
-            about.set_application_icon("io.github.Antux912012.debian-cachy-os-kernel-updater")
-            about.set_version(APP_VERSION)
-            about.set_developer_name("Antonio")
-            about.set_comments("Modern GTK4/Adwaita tool to compile, install, optimize, and sign CachyOS kernels on Debian systems.")
-            about.set_website("https://github.com/Antux912012/debian-cachy-kernel-updater")
-            about.set_license_type(Gtk.License.GPL_3_0)
+        else:
             about.present()
 
     def _apply_custom_css(self):
@@ -840,13 +800,13 @@ class KernelUpdaterWindow(Adw.ApplicationWindow):
         if hasattr(self, "cert_folder_row"):
             self.cert_folder_row.set_subtitle(f"{target_dir} (MOK.der, MOK.pem, MOK.priv)")
 
-    def on_open_certs_folder_clicked(self, button=None):
-        target_dir = self.get_current_output_dir()
+    def _open_folder_in_file_manager(self, target_dir: str, label: str = "output folder"):
+        """Creates target_dir if missing and opens it in the user's file manager."""
         try:
             os.makedirs(target_dir, exist_ok=True)
         except Exception:
             pass
-        self.log(f"[*] Opening certificates & output folder: {target_dir}")
+        self.log(f"[*] Opening {label}: {target_dir}")
         try:
             Gio.AppInfo.launch_default_for_uri(f"file://{target_dir}", None)
         except Exception:
@@ -854,6 +814,21 @@ class KernelUpdaterWindow(Adw.ApplicationWindow):
                 subprocess.Popen(self.kernel_manager._host_cmd(['xdg-open', target_dir]))
             except Exception as e:
                 self.log(f"[!] Could not open folder: {e}")
+
+    def _set_action_buttons_sensitive(self, sensitive: bool, include_aux: bool = False):
+        """Enables or disables primary action buttons during background operations."""
+        for attr in ("start_build_button", "install_existing_button", "sign_installed_action_button", "reset_mok_button", "reset_mok_row_button"):
+            btn = getattr(self, attr, None)
+            if btn is not None:
+                btn.set_sensitive(sensitive)
+        if include_aux:
+            for attr in ("deps_button", "check_button", "rollback_button"):
+                btn = getattr(self, attr, None)
+                if btn is not None:
+                    btn.set_sensitive(sensitive)
+
+    def on_open_certs_folder_clicked(self, button=None):
+        self._open_folder_in_file_manager(self.get_current_output_dir(), "certificates & output folder")
 
     def refresh_secure_boot_ui(self):
         """Refreshes live Secure Boot pills and certificate status."""
@@ -962,55 +937,7 @@ class KernelUpdaterWindow(Adw.ApplicationWindow):
         out_dir = self.kernel_manager.last_output_dir or self.kernel_manager.get_output_kernel_dir(is_native=is_native, version=ver)
         if not os.path.exists(out_dir):
             out_dir = self.kernel_manager.output_base_dir
-        if not os.path.exists(out_dir):
-            try:
-                os.makedirs(out_dir, exist_ok=True)
-            except Exception:
-                pass
-        self.log(f"[*] Opening output folder: {out_dir}")
-        try:
-            Gio.AppInfo.launch_default_for_uri(f"file://{out_dir}", None)
-        except Exception:
-            try:
-                subprocess.Popen(self.kernel_manager._host_cmd(['xdg-open', out_dir]))
-            except Exception as e:
-                self.log(f"[!] Could not open folder: {e}")
-
-    def on_install_scx_clicked(self, button):
-        self.set_buttons_sensitive(False)
-        self.install_scx_button.set_sensitive(False)
-        self.status_label.set_text("Installing sched-ext (SCX v1.1.4) BPF schedulers...")
-        self.progress_bar.set_fraction(0.2)
-        self.log_expander.set_expanded(True)
-
-        def run():
-            try:
-                self.kernel_manager.install_scx_schedulers(progress_callback=self.log)
-                GLib.idle_add(self.on_install_scx_complete, True, "sched-ext (SCX v1.1.4) BPF schedulers installed successfully!")
-            except Exception as e:
-                GLib.idle_add(self.on_install_scx_complete, False, str(e))
-
-        threading.Thread(target=run, daemon=True).start()
-
-    def on_install_scx_complete(self, success, message):
-        self.set_buttons_sensitive(True)
-        self.install_scx_button.set_sensitive(True)
-        scx_st = self.kernel_manager.get_scx_status()
-        scx_count = scx_st.get("installed_count", 0)
-        self.scx_pill.set_label(f"[SCX: {scx_count} Installed]" if scx_count > 0 else "[SCX: Not Installed]")
-        if scx_count > 0:
-            self.scx_pill.remove_css_class("sb-pill-inactive")
-            self.scx_pill.add_css_class("sb-pill-active")
-            self.install_scx_button.set_label("🔄 Update SCX")
-            self.install_scx_button.remove_css_class("suggested-action")
-        if success:
-            self.progress_bar.set_fraction(1.0)
-            self.status_label.set_text(message)
-        else:
-            self.progress_bar.set_fraction(0.0)
-            self.status_label.set_text("SCX installation failed (see build log)")
-            self.log(f"[!] SCX installation error: {message}")
-        return False
+        self._open_folder_in_file_manager(out_dir, "output folder")
 
     def on_install_deps_clicked(self, button):
         use_container = (self.build_mode_row.get_selected() == 1)
@@ -1055,13 +982,7 @@ class KernelUpdaterWindow(Adw.ApplicationWindow):
             self._start_deps_install(use_container=use_container, force_rebuild=False)
 
     def _start_deps_install(self, use_container=False, force_rebuild=False, and_build=False):
-        self.deps_button.set_sensitive(False)
-        self.start_build_button.set_sensitive(False)
-        self.check_button.set_sensitive(False)
-        if hasattr(self, "reset_mok_button"):
-            self.reset_mok_button.set_sensitive(False)
-        if hasattr(self, "reset_mok_row_button"):
-            self.reset_mok_row_button.set_sensitive(False)
+        self._set_action_buttons_sensitive(False, include_aux=True)
 
         def deps_task():
             success = self.kernel_manager.install_build_dependencies(
@@ -1074,13 +995,7 @@ class KernelUpdaterWindow(Adw.ApplicationWindow):
         threading.Thread(target=deps_task, daemon=True).start()
 
     def _on_deps_complete(self, success, and_build=False):
-        self.deps_button.set_sensitive(True)
-        self.check_button.set_sensitive(True)
-        self.start_build_button.set_sensitive(True)
-        if hasattr(self, "reset_mok_button"):
-            self.reset_mok_button.set_sensitive(True)
-        if hasattr(self, "reset_mok_row_button"):
-            self.reset_mok_row_button.set_sensitive(True)
+        self._set_action_buttons_sensitive(True, include_aux=True)
         if success:
             self.log("[✓] Build dependencies setup complete.")
             if and_build:
@@ -1223,18 +1138,7 @@ class KernelUpdaterWindow(Adw.ApplicationWindow):
         mok_password=""
     ):
         total_stages = 5 if auto_install else 4
-
-        self.start_build_button.set_sensitive(False)
-        self.install_existing_button.set_sensitive(False)
-        self.sign_installed_action_button.set_sensitive(False)
-        if hasattr(self, "reset_mok_button"):
-            self.reset_mok_button.set_sensitive(False)
-        if hasattr(self, "reset_mok_row_button"):
-            self.reset_mok_row_button.set_sensitive(False)
-        self.deps_button.set_sensitive(False)
-        self.check_button.set_sensitive(False)
-        self.rollback_button.set_sensitive(False)
-
+        self._set_action_buttons_sensitive(False, include_aux=True)
         target_output_dir = self.get_current_output_dir()
 
         self.log("\n=======================================================")
@@ -1307,17 +1211,7 @@ class KernelUpdaterWindow(Adw.ApplicationWindow):
         threading.Thread(target=build_task, daemon=True).start()
 
     def _on_build_complete(self, success, auto_install=True, sign_after_install=True, mok_status=None, error_msg=None):
-        self.start_build_button.set_sensitive(True)
-        self.install_existing_button.set_sensitive(True)
-        self.sign_installed_action_button.set_sensitive(True)
-        if hasattr(self, "reset_mok_button"):
-            self.reset_mok_button.set_sensitive(True)
-        if hasattr(self, "reset_mok_row_button"):
-            self.reset_mok_row_button.set_sensitive(True)
-        self.deps_button.set_sensitive(True)
-        self.check_button.set_sensitive(True)
-        self.rollback_button.set_sensitive(True)
-
+        self._set_action_buttons_sensitive(True, include_aux=True)
         self.refresh_secure_boot_ui()
 
         if success:
@@ -1355,13 +1249,7 @@ class KernelUpdaterWindow(Adw.ApplicationWindow):
 
         def start_install(mok_password=""):
             self.log(f"\n[*] Initiating package {mode_desc.lower()} via pkexec...")
-            self.install_existing_button.set_sensitive(False)
-            self.start_build_button.set_sensitive(False)
-            self.sign_installed_action_button.set_sensitive(False)
-            if hasattr(self, "reset_mok_button"):
-                self.reset_mok_button.set_sensitive(False)
-            if hasattr(self, "reset_mok_row_button"):
-                self.reset_mok_row_button.set_sensitive(False)
+            self._set_action_buttons_sensitive(False)
 
             def install_task():
                 success, mok_status = self.kernel_manager.install_and_sign_kernel_debs(
@@ -1380,14 +1268,7 @@ class KernelUpdaterWindow(Adw.ApplicationWindow):
             start_install("")
 
     def _on_install_complete(self, success, mok_status, sign_after_install=True):
-        self.install_existing_button.set_sensitive(True)
-        self.start_build_button.set_sensitive(True)
-        self.sign_installed_action_button.set_sensitive(True)
-        if hasattr(self, "reset_mok_button"):
-            self.reset_mok_button.set_sensitive(True)
-        if hasattr(self, "reset_mok_row_button"):
-            self.reset_mok_row_button.set_sensitive(True)
-
+        self._set_action_buttons_sensitive(True)
         self.refresh_secure_boot_ui()
 
         if success:
@@ -1409,13 +1290,7 @@ class KernelUpdaterWindow(Adw.ApplicationWindow):
         target_dir = self.get_current_output_dir()
         def start_signing(mok_password=""):
             current_kernel = self.kernel_manager.get_current_kernel_version()
-            self.sign_installed_action_button.set_sensitive(False)
-            self.start_build_button.set_sensitive(False)
-            self.install_existing_button.set_sensitive(False)
-            if hasattr(self, "reset_mok_button"):
-                self.reset_mok_button.set_sensitive(False)
-            if hasattr(self, "reset_mok_row_button"):
-                self.reset_mok_row_button.set_sensitive(False)
+            self._set_action_buttons_sensitive(False)
 
             self.log("\n=======================================================")
             self.log("[*] Starting Post-Installation Kernel & Module Signing (MOK)...")
@@ -1441,14 +1316,7 @@ class KernelUpdaterWindow(Adw.ApplicationWindow):
         self.request_mok_password_dialog(start_signing)
 
     def _on_sign_installed_complete(self, success, mok_status):
-        self.sign_installed_action_button.set_sensitive(True)
-        self.start_build_button.set_sensitive(True)
-        self.install_existing_button.set_sensitive(True)
-        if hasattr(self, "reset_mok_button"):
-            self.reset_mok_button.set_sensitive(True)
-        if hasattr(self, "reset_mok_row_button"):
-            self.reset_mok_row_button.set_sensitive(True)
-
+        self._set_action_buttons_sensitive(True)
         self.refresh_secure_boot_ui()
 
         if success:
@@ -1462,6 +1330,72 @@ class KernelUpdaterWindow(Adw.ApplicationWindow):
         else:
             self.log(f"[!] Secure Boot signing failed: {mok_status}")
         return False
+
+    def _present_mok_password_dialog(
+        self,
+        heading: str,
+        body: str,
+        action_id: str,
+        action_label: str,
+        appearance,
+        pwd_prompt: str,
+        confirm_prompt: str,
+        on_confirmed,
+        cancel_msg: str
+    ):
+        """Shared builder for 8–16 character MOK password entry and confirmation dialogs."""
+        dialog = Adw.MessageDialog(transient_for=self, heading=heading, body=body)
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response(action_id, action_label)
+        dialog.set_response_appearance(action_id, appearance)
+        dialog.set_response_enabled(action_id, False)
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        box.set_margin_top(8)
+        box.set_margin_bottom(8)
+
+        pwd_label = Gtk.Label(label=pwd_prompt, halign=Gtk.Align.START)
+        pwd_label.add_css_class("caption")
+        pwd_entry = Gtk.PasswordEntry()
+        pwd_entry.set_show_peek_icon(True)
+
+        confirm_label = Gtk.Label(label=confirm_prompt, halign=Gtk.Align.START)
+        confirm_label.add_css_class("caption")
+        confirm_entry = Gtk.PasswordEntry()
+        confirm_entry.set_show_peek_icon(True)
+
+        hint_label = Gtk.Label(label="Password must be between 8 and 16 characters.", halign=Gtk.Align.START)
+        hint_label.add_css_class("dim-label")
+        hint_label.add_css_class("caption")
+
+        for child in (pwd_label, pwd_entry, confirm_label, confirm_entry, hint_label):
+            box.append(child)
+
+        def validate_passwords(*_):
+            p1 = pwd_entry.get_text()
+            p2 = confirm_entry.get_text()
+            if len(p1) < 8 or len(p1) > 16:
+                hint_label.set_label("Password must be between 8 and 16 characters.")
+                dialog.set_response_enabled(action_id, False)
+            elif p1 != p2:
+                hint_label.set_label("Passwords do not match.")
+                dialog.set_response_enabled(action_id, False)
+            else:
+                hint_label.set_label("✓ Password valid and confirmed.")
+                dialog.set_response_enabled(action_id, True)
+
+        pwd_entry.connect("notify::text", validate_passwords)
+        confirm_entry.connect("notify::text", validate_passwords)
+        dialog.set_extra_child(box)
+
+        def on_dialog_response(dlg, response):
+            if response == action_id:
+                on_confirmed(pwd_entry.get_text())
+            else:
+                self.log(cancel_msg)
+
+        dialog.connect("response", on_dialog_response)
+        dialog.present()
 
     def request_mok_password_dialog(self, on_confirmed_callback):
         """
@@ -1477,8 +1411,7 @@ class KernelUpdaterWindow(Adw.ApplicationWindow):
             on_confirmed_callback("")
             return
 
-        dialog = Adw.MessageDialog(
-            transient_for=self,
+        self._present_mok_password_dialog(
             heading="UEFI Secure Boot & MOK Setup",
             body=(
                 "Your kernel and out-of-tree drivers will be signed with your local Machine Owner Key (MOK).\n\n"
@@ -1486,64 +1419,15 @@ class KernelUpdaterWindow(Adw.ApplicationWindow):
                 "Because this MOK key is not yet enrolled in your motherboard's UEFI NVRAM, "
                 "please choose a one-time temporary password (8 to 16 characters) to authorize "
                 "it during your next reboot in the MokManager screen:"
-            )
+            ),
+            action_id="enroll",
+            action_label="Sign & Enroll Key",
+            appearance=Adw.ResponseAppearance.SUGGESTED,
+            pwd_prompt="One-Time MOK Password (8–16 characters):",
+            confirm_prompt="Confirm Password:",
+            on_confirmed=on_confirmed_callback,
+            cancel_msg="[i] Operation cancelled by user."
         )
-        dialog.add_response("cancel", "Cancel")
-        dialog.add_response("enroll", "Sign & Enroll Key")
-        dialog.set_response_appearance("enroll", Adw.ResponseAppearance.SUGGESTED)
-        dialog.set_response_enabled("enroll", False)
-
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
-        box.set_margin_top(8)
-        box.set_margin_bottom(8)
-
-        pwd_label = Gtk.Label(label="One-Time MOK Password (8–16 characters):", halign=Gtk.Align.START)
-        pwd_label.add_css_class("caption")
-        pwd_entry = Gtk.PasswordEntry()
-        pwd_entry.set_show_peek_icon(True)
-
-        confirm_label = Gtk.Label(label="Confirm Password:", halign=Gtk.Align.START)
-        confirm_label.add_css_class("caption")
-        confirm_entry = Gtk.PasswordEntry()
-        confirm_entry.set_show_peek_icon(True)
-
-        hint_label = Gtk.Label(label="Password must be between 8 and 16 characters.", halign=Gtk.Align.START)
-        hint_label.add_css_class("dim-label")
-        hint_label.add_css_class("caption")
-
-        box.append(pwd_label)
-        box.append(pwd_entry)
-        box.append(confirm_label)
-        box.append(confirm_entry)
-        box.append(hint_label)
-
-        def validate_passwords(*_):
-            p1 = pwd_entry.get_text()
-            p2 = confirm_entry.get_text()
-            if len(p1) < 8 or len(p1) > 16:
-                hint_label.set_label("Password must be between 8 and 16 characters.")
-                dialog.set_response_enabled("enroll", False)
-            elif p1 != p2:
-                hint_label.set_label("Passwords do not match.")
-                dialog.set_response_enabled("enroll", False)
-            else:
-                hint_label.set_label("✓ Password valid and confirmed.")
-                dialog.set_response_enabled("enroll", True)
-
-        pwd_entry.connect("notify::text", validate_passwords)
-        confirm_entry.connect("notify::text", validate_passwords)
-
-        dialog.set_extra_child(box)
-
-        def on_dialog_response(dlg, response):
-            if response == "enroll":
-                pwd = pwd_entry.get_text()
-                on_confirmed_callback(pwd)
-            else:
-                self.log("[i] Operation cancelled by user.")
-
-        dialog.connect("response", on_dialog_response)
-        dialog.present()
 
     def on_reset_mok_clicked(self, button=None):
         target_dir = self.get_current_output_dir()
@@ -1552,8 +1436,7 @@ class KernelUpdaterWindow(Adw.ApplicationWindow):
         except Exception:
             pass
 
-        dialog = Adw.MessageDialog(
-            transient_for=self,
+        self._present_mok_password_dialog(
             heading="Reset & Recreate MOK Keys",
             body=(
                 f"This will cancel your previous UEFI MOK enrollment, delete old certificates in:\n"
@@ -1561,73 +1444,18 @@ class KernelUpdaterWindow(Adw.ApplicationWindow):
                 f"It will generate a brand-new RSA-2048 MOK keypair from scratch, re-sign your currently installed "
                 f"kernel in /boot, and queue the new key for enrollment on next reboot.\n\n"
                 f"Enter a new one-time enrollment password (8 to 16 characters):"
-            )
+            ),
+            action_id="reset",
+            action_label="Reset & Recreate Keys",
+            appearance=Adw.ResponseAppearance.DESTRUCTIVE,
+            pwd_prompt="New MOK Password (8–16 characters):",
+            confirm_prompt="Confirm New Password:",
+            on_confirmed=lambda pwd: self._start_reset_and_recreate_mok(target_dir, pwd),
+            cancel_msg="[i] MOK reset cancelled by user."
         )
-        dialog.add_response("cancel", "Cancel")
-        dialog.add_response("reset", "Reset & Recreate Keys")
-        dialog.set_response_appearance("reset", Adw.ResponseAppearance.DESTRUCTIVE)
-        dialog.set_response_enabled("reset", False)
-
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
-        box.set_margin_top(8)
-        box.set_margin_bottom(8)
-
-        pwd_label = Gtk.Label(label="New MOK Password (8–16 characters):", halign=Gtk.Align.START)
-        pwd_label.add_css_class("caption")
-        pwd_entry = Gtk.PasswordEntry()
-        pwd_entry.set_show_peek_icon(True)
-
-        confirm_label = Gtk.Label(label="Confirm New Password:", halign=Gtk.Align.START)
-        confirm_label.add_css_class("caption")
-        confirm_entry = Gtk.PasswordEntry()
-        confirm_entry.set_show_peek_icon(True)
-
-        hint_label = Gtk.Label(label="Password must be between 8 and 16 characters.", halign=Gtk.Align.START)
-        hint_label.add_css_class("dim-label")
-        hint_label.add_css_class("caption")
-
-        box.append(pwd_label)
-        box.append(pwd_entry)
-        box.append(confirm_label)
-        box.append(confirm_entry)
-        box.append(hint_label)
-
-        def validate_passwords(*_):
-            p1 = pwd_entry.get_text()
-            p2 = confirm_entry.get_text()
-            if len(p1) < 8 or len(p1) > 16:
-                hint_label.set_label("Password must be between 8 and 16 characters.")
-                dialog.set_response_enabled("reset", False)
-            elif p1 != p2:
-                hint_label.set_label("Passwords do not match.")
-                dialog.set_response_enabled("reset", False)
-            else:
-                hint_label.set_label("✓ Password valid and confirmed.")
-                dialog.set_response_enabled("reset", True)
-
-        pwd_entry.connect("notify::text", validate_passwords)
-        confirm_entry.connect("notify::text", validate_passwords)
-
-        dialog.set_extra_child(box)
-
-        def on_dialog_response(dlg, response):
-            if response == "reset":
-                pwd = pwd_entry.get_text()
-                self._start_reset_and_recreate_mok(target_dir, pwd)
-            else:
-                self.log("[i] MOK reset cancelled by user.")
-
-        dialog.connect("response", on_dialog_response)
-        dialog.present()
 
     def _start_reset_and_recreate_mok(self, target_dir, password):
-        self.start_build_button.set_sensitive(False)
-        self.install_existing_button.set_sensitive(False)
-        self.sign_installed_action_button.set_sensitive(False)
-        if hasattr(self, "reset_mok_button"):
-            self.reset_mok_button.set_sensitive(False)
-        if hasattr(self, "reset_mok_row_button"):
-            self.reset_mok_row_button.set_sensitive(False)
+        self._set_action_buttons_sensitive(False)
 
         self.log("\n=======================================================")
         self.log("[*] Resetting & Recreating MOK Keys from Scratch...")
@@ -1649,14 +1477,7 @@ class KernelUpdaterWindow(Adw.ApplicationWindow):
         threading.Thread(target=worker, daemon=True).start()
 
     def _on_reset_mok_complete(self, success, mok_status, target_dir):
-        self.start_build_button.set_sensitive(True)
-        self.install_existing_button.set_sensitive(True)
-        self.sign_installed_action_button.set_sensitive(True)
-        if hasattr(self, "reset_mok_button"):
-            self.reset_mok_button.set_sensitive(True)
-        if hasattr(self, "reset_mok_row_button"):
-            self.reset_mok_row_button.set_sensitive(True)
-
+        self._set_action_buttons_sensitive(True)
         self.refresh_secure_boot_ui()
 
         if success:
@@ -1704,10 +1525,6 @@ class KernelUpdaterWindow(Adw.ApplicationWindow):
         )
         dialog.add_response("ok", "OK")
         dialog.present()
-
-    def show_mok_enrollment_dialog(self, der_path=None):
-        """Compatibility helper redirecting to request_mok_password_dialog."""
-        self.request_mok_password_dialog(lambda pwd: self.on_sign_installed_kernel_clicked(None))
 
     def on_enroll_mok_clicked(self, button=None):
         def _do_enroll(pwd):
@@ -1805,10 +1622,10 @@ if __name__ == '__main__':
     cli_flags = {
         '--check', '--status-sb', '--install-deps', '--build', '--install',
         '--rollback', '--sign-mok', '--sign-deb-mok', '--enroll-mok',
-        '--reset-mok', '--sign-debs'
+        '--reset-mok'
     }
     if '--version' in sys.argv[1:]:
-        print(f"Debian CachyOS Kernel Updater v{APP_VERSION}")
+        print(f"Kernel Updater for CachyOS on Debian v{APP_VERSION}")
         sys.exit(0)
     if any(arg.split('=')[0] in cli_flags for arg in sys.argv[1:]):
         import runpy

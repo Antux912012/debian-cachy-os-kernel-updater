@@ -11,7 +11,7 @@ An independent, community-driven **GTK4 / Libadwaita** application designed for 
 ![GTK4](https://img.shields.io/badge/GUI-GTK4%20%2F%20Libadwaita-00A896?logo=gnome&logoColor=white)
 ![Python](https://img.shields.io/badge/Language-Python%203-3776AB?logo=python&logoColor=white)
 ![Flatpak](https://img.shields.io/badge/Flatpak-io.github.Antux912012.debian--cachy--os--kernel--updater-4A90D9?logo=flathub&logoColor=white)
-![Version](https://img.shields.io/badge/version-1.1.7-00A896.svg)
+![Version](https://img.shields.io/badge/version-1.1.8-00A896.svg)
 ![License](https://img.shields.io/badge/License-GPL--3.0--or--later-blue.svg)
 
 <p align="center">
@@ -43,26 +43,6 @@ An independent, community-driven **GTK4 / Libadwaita** application designed for 
 > - **Inherent System Risks:** Compiling Linux kernels, tailoring hardware drivers, modifying `/boot`, configuring GRUB bootloader entries, and enrolling Machine Owner Keys (MOK) into motherboard UEFI NVRAM are low-level operations that carry inherent risks. You use this software **ENTIRELY AT YOUR OWN RISK**.
 > - **Mandatory Fallback Kernel:** Users must **always maintain a proven, working stock Debian kernel** installed on their system to guarantee system recovery should an experimental kernel fail to boot.
 > - **Open Source Standard & License:** This tool is free software licensed under the standard **GNU General Public License v3.0 (GPLv3)**. See [LICENSE](LICENSE) for the full terms, conditions, and standard disclaimer of warranty (GPLv3 Sections 15 & 16).
-
----
-
-
-## 🔄 Pluggable `sched-ext` (SCX v1.1.4) BPF CPU Schedulers
-
-Starting in **v1.1.7**, **Kernel Updater for CachyOS on Debian** includes full kernel and userspace support for **`sched-ext` (`scx` v1.1.4)**:
-
-- **Kernel `CONFIG_SCHED_CLASS_EXT=y` & `vmlinux` BTF Preservation:** Automatically enables `CONFIG_SCHED_CLASS_EXT=y`, `CONFIG_BPF_SYSCALL=y`, `CONFIG_BPF_JIT=y`, and `CONFIG_DEBUG_INFO_BTF=y` (with `CONFIG_DEBUG_INFO_REDUCED=y` so no bloated `-dbg` packages are generated) across both **BORE** and **EEVDF** builds, ensuring `/sys/kernel/sched_ext` is always available at runtime.
-- **Bundled Precompiled `scx-scheds_1.1.4_amd64.deb` Package:** Ships with 14 precompiled official `sched-ext` v1.1.4 schedulers (`scx_bpfland`, `scx_lavd`, `scx_flash`, `scx_rusty`, `scx_cosmos`, `scx_p2dq`, `scx_beerland`, `scx_rustland`, `scx_layered`, `scx_tickless`, `scx_cake`, `scx_eevdf`, `scx_mitosis`, `scx_rlfifo`) plus the `scxctl` management utility and `scx.service` systemd unit.
-- **1-Click GUI & CLI Installation:**
-  - Click **⚡ Install SCX (.deb)** in **Step 2** of the GUI to install or update the `scx-scheds` package at any time, or let the kernel installer install it automatically alongside your newly compiled CachyOS kernel.
-  - From the terminal:
-    ```bash
-    # Check kernel sched_ext status and installed scx_* binaries
-    python3 kernel_manager.py --status-scx
-
-    # Install precompiled scx-scheds_1.1.4_amd64.deb (with GitHub Release & Cargo source fallback)
-    python3 kernel_manager.py --install-scx
-    ```
 
 ---
 
@@ -142,13 +122,13 @@ sudo apt install cachy-kernel-updater
 
 ### Method 2: Direct `.deb` Package Download
 
-Download the pre-compiled `.deb` package from the [v1.1.6 Release Page](https://github.com/Antux912012/debian-cachy-os-kernel-updater/releases/tag/v1.1.6):
+Download the pre-compiled `.deb` package from the [v1.1.8 Release Page](https://github.com/Antux912012/debian-cachy-os-kernel-updater/releases/tag/v1.1.8):
 
-* 📦 **[cachy-kernel-updater_1.1.7_all.deb](https://github.com/Antux912012/debian-cachy-os-kernel-updater/releases/download/v1.1.6/cachy-kernel-updater_1.1.7_all.deb)**
+* 📦 **[cachy-kernel-updater_1.1.8_all.deb](https://github.com/Antux912012/debian-cachy-os-kernel-updater/releases/download/v1.1.8/cachy-kernel-updater_1.1.8_all.deb)**
 
 Install it using `apt` (which automatically installs any missing dependencies):
 ```bash
-sudo apt install -y ./cachy-kernel-updater_1.1.7_all.deb
+sudo apt install -y ./cachy-kernel-updater_1.1.8_all.deb
 ```
 
 ---
@@ -261,7 +241,7 @@ sudo ./sign-kernel.sh --reset-and-recreate ~/kernel-build-deb/Linux-kernel-Cachy
 ```bash
 ./build_deb.sh
 ```
-This generates the ready-to-install package at `deb_dist/cachy-kernel-updater_1.1.7_all.deb`.
+This generates the ready-to-install package at `deb_dist/cachy-kernel-updater_1.1.8_all.deb`.
 
 ### Build the Standalone Flatpak Bundle (`.flatpak`)
 ```bash
@@ -319,6 +299,11 @@ We express our sincerest gratitude to the CachyOS developers for their continuou
 ---
 
 ## 📜 Changelog
+
+### v1.1.8
+- **Removed `sched-ext` (SCX) Integration**: Removed SCX userspace BPF scheduler installation, bundled SCX `.deb` archives, and `CONFIG_SCHED_CLASS_EXT` overrides to focus cleanly on CachyOS's native **BORE** and **EEVDF** kernel schedulers.
+- **Restored True `DEBUG_INFO_NONE` Stripping**: Restored `--enable DEBUG_INFO_NONE` (disabling DWARF/BTF debug info) when "Strip Debug Symbols" is active, significantly lowering disk usage and build time.
+- **Codebase Audit & Optimization**: Consolidated multiple `scripts/config` subprocess invocations into a single batched execution, unified `/var/lib/dpkg/status` parsing and MOK `sign-kernel.sh` stream handling, deduplicated GTK4/Libadwaita dialog and action helpers, and removed legacy `/app/share/pixmaps` icon paths and dormant methods.
 
 ### v1.1.6
 - **Automatic Debian & Ubuntu Host OS Detection (`/etc/os-release` & `/run/host/etc/os-release`)**: Added [`KernelManager.detect_host_distro()`](kernel_manager.py) to automatically detect whether the host system (or build environment) is running Debian or Ubuntu/derivatives, dynamically selecting `debian:bookworm-slim` (`cachyos-kernel-builder:debian`) or `ubuntu:24.04` (`cachyos-kernel-builder:ubuntu`), matching `-cachyos-debian` / `-cachyos-ubuntu` localversion tags, and displaying the active Host OS in the top status banner.
