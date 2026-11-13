@@ -1,29 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO="Antux912012/debian-cachy-os-kernel-updater"
-API_URL="https://api.github.com/repos/${REPO}/releases/latest"
+repo="Antux912012/debian-cachy-os-kernel-updater"
 
-RELEASE_JSON=$(curl -fsSL -H "Accept: application/vnd.github+json" "$API_URL")
-ASSET_URL=$(printf '%s' "$RELEASE_JSON" | python3 -c '
-import json, sys, re
-data = json.load(sys.stdin)
-for a in data.get("assets", []):
-    if re.search(r"cachy-kernel-updater_.*_all\.deb$", a.get("name", "")):
-        print(a["browser_download_url"])
-        break
-')
+need() { command -v "$1" >/dev/null 2>&1 || { echo "missing command: $1" >&2; exit 1; }; }
+need curl; need jq
 
-if [[ -z "$ASSET_URL" ]]; then
-    echo "No matching .deb release asset found for ${REPO}" >&2
-    exit 1
-fi
+rel="$(curl -fsSL ${GITHUB_TOKEN:+-H "Authorization: Bearer $GITHUB_TOKEN"} \
+        "https://api.github.com/repos/$repo/releases/latest")"
 
-TMP_DEB=$(mktemp /tmp/cachy-updater-XXXXXX.deb)
-trap 'rm -f "$TMP_DEB"' EXIT
-curl -fsSL -o "$TMP_DEB" "$ASSET_URL"
+version="$(jq -r '.tag_name | ltrimstr("v")' <<<"$rel")"
+date="$(jq -r '.published_at' <<<"$rel" | cut -c1-10)"
+url="$(jq -r '.assets[] | select(.name | test("cachy-kernel-updater_.*_all\\.deb$")) | .browser_download_url' <<<"$rel" | head -n1)"
 
-SHA256=$(sha256sum "$TMP_DEB" | awk '{print $1}')
-SIZE=$(stat -c%s "$TMP_DEB")
+[ -n "$version" ] && [ -n "$url" ] || { echo "failed to resolve CachyOS Kernel Updater release" >&2; exit 1; }
+echo "resolved debian-cachy-os-kernel-updater $version ($date): $url" >&2
 
-printf 'url=%s\nsha256=%s\nsize=%s\n' "$ASSET_URL" "$SHA256" "$SIZE"
+jq -n --arg v "$version" --arg d "$date" --arg u "$url" \
+  '{version:$v, releaseDate:$d, sources:[{filename:"cachy-kernel-updater.deb", url:$u}]}'

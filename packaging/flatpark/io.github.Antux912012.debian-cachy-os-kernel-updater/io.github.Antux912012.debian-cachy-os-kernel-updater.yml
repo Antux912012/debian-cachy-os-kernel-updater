@@ -1,8 +1,11 @@
-app-id: io.github.Antux912012.debian-cachy-os-kernel-updater
+id: io.github.Antux912012.debian-cachy-os-kernel-updater
 runtime: org.gnome.Platform
 runtime-version: '51'
 sdk: org.gnome.Sdk
 command: cachy-kernel-updater
+separate-locales: false
+build-options:
+  no-debuginfo: true
 
 finish-args:
   - --share=ipc
@@ -47,11 +50,15 @@ modules:
       - install -Dm644 io.github.Antux912012.debian-cachy-os-kernel-updater.svg /app/share/icons/hicolor/scalable/apps/io.github.Antux912012.debian-cachy-os-kernel-updater.svg
       - install -Dm644 io.github.Antux912012.debian-cachy-os-kernel-updater.png /app/share/icons/hicolor/512x512/apps/io.github.Antux912012.debian-cachy-os-kernel-updater.png
     sources:
+      # BEGIN MANAGED EXTRA-DATA
       - type: extra-data
-        filename: cachy-kernel-updater_1.2.0_all.deb
+        filename: cachy-kernel-updater.deb
+        only-arches:
+          - x86_64
         url: https://github.com/Antux912012/debian-cachy-os-kernel-updater/releases/download/v1.2.0/cachy-kernel-updater_1.2.0_all.deb
         sha256: c23055fd09fede34b8aa4704b2d20fc73b558c206b5afb1331397d7b6a81952c
         size: 5228924
+      # END MANAGED EXTRA-DATA
       - type: file
         path: apply_extra.sh
       - type: file
