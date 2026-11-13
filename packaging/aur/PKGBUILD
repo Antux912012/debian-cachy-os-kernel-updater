@@ -1,0 +1,55 @@
+# Maintainer: Antonio De Gaetano <antux912012@users.noreply.github.com>
+pkgname=debian-cachy-os-kernel-updater
+pkgver=1.2.0
+pkgrel=1
+pkgdesc="Native GTK4 & Libadwaita CachyOS Kernel Installer & Updater for Debian-based systems"
+arch=('any')
+url="https://github.com/Antux912012/debian-cachy-os-kernel-updater"
+license=('GPL-3.0-or-later')
+depends=(
+    'python'
+    'python-gobject'
+    'python-requests'
+    'gtk4'
+    'libadwaita'
+    'polkit'
+    'hicolor-icon-theme'
+)
+optdepends=(
+    'podman: Containerized Debian/Ubuntu kernel compilation'
+    'sbsigntools: UEFI Secure Boot MOK kernel signing'
+    'mokutil: UEFI MOK key enrollment'
+)
+source=("${pkgname}-${pkgver}.tar.gz::https://github.com/Antux912012/${pkgname}/archive/refs/tags/v${pkgver}.tar.gz")
+sha256sums=('c46cafc3980b96fe03828273eb2ab124f92b905000bc014640400e6de96031f5')
+
+package() {
+    cd "${srcdir}/${pkgname}-${pkgver}"
+
+    install -dm755 "${pkgdir}/usr/share/cachy-kernel-updater"
+    install -m644 main.py kernel_manager.py Containerfile "${pkgdir}/usr/share/cachy-kernel-updater/"
+    install -m755 sign-kernel.sh "${pkgdir}/usr/share/cachy-kernel-updater/sign-kernel.sh"
+    cp -r assets "${pkgdir}/usr/share/cachy-kernel-updater/"
+
+    install -dm755 "${pkgdir}/usr/bin"
+    cat > "${pkgdir}/usr/bin/cachy-kernel-updater" << 'EOF'
+#!/usr/bin/env bash
+exec /usr/bin/python3 /usr/share/cachy-kernel-updater/main.py "$@"
+EOF
+    chmod 755 "${pkgdir}/usr/bin/cachy-kernel-updater"
+
+    install -Dm644 io.github.Antux912012.debian-cachy-os-kernel-updater.desktop \
+        "${pkgdir}/usr/share/applications/io.github.Antux912012.debian-cachy-os-kernel-updater.desktop"
+    install -Dm644 io.github.Antux912012.debian-cachy-os-kernel-updater.metainfo.xml \
+        "${pkgdir}/usr/share/metainfo/io.github.Antux912012.debian-cachy-os-kernel-updater.metainfo.xml"
+    install -Dm644 assets/io.github.Antux912012.debian-cachy-os-kernel-updater.svg \
+        "${pkgdir}/usr/share/icons/hicolor/scalable/apps/io.github.Antux912012.debian-cachy-os-kernel-updater.svg"
+    install -Dm644 assets/logo_48.png \
+        "${pkgdir}/usr/share/icons/hicolor/48x48/apps/io.github.Antux912012.debian-cachy-os-kernel-updater.png"
+    install -Dm644 assets/logo_128.png \
+        "${pkgdir}/usr/share/icons/hicolor/128x128/apps/io.github.Antux912012.debian-cachy-os-kernel-updater.png"
+    install -Dm644 assets/logo_256.png \
+        "${pkgdir}/usr/share/icons/hicolor/256x256/apps/io.github.Antux912012.debian-cachy-os-kernel-updater.png"
+    install -Dm644 assets/logo_512.png \
+        "${pkgdir}/usr/share/icons/hicolor/512x512/apps/io.github.Antux912012.debian-cachy-os-kernel-updater.png"
+}

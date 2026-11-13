@@ -1,0 +1,21 @@
+pkgbase = debian-cachy-os-kernel-updater
+	pkgdesc = Native GTK4 & Libadwaita CachyOS Kernel Installer & Updater for Debian-based systems
+	pkgver = 1.2.0
+	pkgrel = 1
+	url = https://github.com/Antux912012/debian-cachy-os-kernel-updater
+	arch = any
+	license = GPL-3.0-or-later
+	depends = python
+	depends = python-gobject
+	depends = python-requests
+	depends = gtk4
+	depends = libadwaita
+	depends = polkit
+	depends = hicolor-icon-theme
+	optdepends = podman: Containerized Debian/Ubuntu kernel compilation
+	optdepends = sbsigntools: UEFI Secure Boot MOK kernel signing
+	optdepends = mokutil: UEFI MOK key enrollment
+	source = debian-cachy-os-kernel-updater-1.2.0.tar.gz::https://github.com/Antux912012/debian-cachy-os-kernel-updater/archive/refs/tags/v1.2.0.tar.gz
+	sha256sums = c46cafc3980b96fe03828273eb2ab124f92b905000bc014640400e6de96031f5
+
+pkgname = debian-cachy-os-kernel-updater

@@ -122,13 +122,31 @@ sudo apt install cachy-kernel-updater
 
 ### Method 2: Direct `.deb` Package Download
 
-Download the pre-compiled `.deb` package from the [v1.1.8 Release Page](https://github.com/Antux912012/debian-cachy-os-kernel-updater/releases/tag/v1.1.8):
+Download the pre-compiled `.deb` package from the [v1.2.0 Release Page](https://github.com/Antux912012/debian-cachy-os-kernel-updater/releases/tag/v1.2.0):
 
-* 📦 **[cachy-kernel-updater_1.1.8_all.deb](https://github.com/Antux912012/debian-cachy-os-kernel-updater/releases/download/v1.1.8/cachy-kernel-updater_1.1.8_all.deb)**
+* 📦 **[cachy-kernel-updater_1.2.0_all.deb](https://github.com/Antux912012/debian-cachy-os-kernel-updater/releases/download/v1.2.0/cachy-kernel-updater_1.2.0_all.deb)**
 
 Install it using `apt` (which automatically installs any missing dependencies):
 ```bash
-sudo apt install -y ./cachy-kernel-updater_1.1.8_all.deb
+sudo apt install -y ./cachy-kernel-updater_1.2.0_all.deb
+```
+
+---
+
+### Method 2b: AppImage, RPM & AUR (`PKGBUILD`)
+
+* **AppImage** (runs across Debian/Ubuntu/Linux distributions with GTK4/Libadwaita):
+```bash
+chmod +x ./Debian-CachyOS-Kernel-Updater-1.2.0-x86_64.AppImage
+./Debian-CachyOS-Kernel-Updater-1.2.0-x86_64.AppImage
+```
+* **RPM Package (`.rpm`)**:
+```bash
+sudo dnf install ./cachy-kernel-updater-1.2.0-1.noarch.rpm
+```
+* **Arch Linux / AUR (`packaging/aur/PKGBUILD`)**:
+```bash
+cd packaging/aur && makepkg -si
 ```
 
 ---
@@ -291,7 +309,8 @@ We express our sincerest gratitude to the CachyOS developers for their continuou
 
 * 🌐 **Official Website:** [https://cachyos.org](https://cachyos.org)
 * 🐙 **Official GitHub:** [https://github.com/CachyOS](https://github.com/CachyOS)
-* 🐧 **CachyOS Kernel Source:** [https://github.com/CachyOS/linux](https://github.com/CachyOS/linux)
+* 🐧 **CachyOS Kernel Source & Patches:** [CachyOS/linux-cachyos](https://github.com/CachyOS/linux-cachyos) & [CachyOS/CachyOS-PKGBUILDS](https://github.com/CachyOS/CachyOS-PKGBUILDS)
+* 🎨 **GNOME / Libadwaita & PyGObject:** [GNOME/libadwaita](https://gitlab.gnome.org/GNOME/libadwaita) & [GNOME/pygobject](https://gitlab.gnome.org/GNOME/pygobject)
 * 💖 **Support & Donate to CachyOS:** If you enjoy the performance benefits of CachyOS kernels, please consider supporting their project directly through the **[CachyOS Donation Page](https://cachyos.org/donate/)** or their **[Patreon](https://www.patreon.com/CachyOS)**.
 
 *(Note: This updater is an independent, community-driven tool for Debian and is not officially affiliated with or maintained by the CachyOS core team).*
