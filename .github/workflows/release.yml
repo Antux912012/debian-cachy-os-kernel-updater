@@ -1,0 +1,22 @@
+name: Publish to FlatPark
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to publish (for example: v1.2.0)'
+        required: false
+        default: ''
+
+jobs:
+  flatpak:
+    runs-on: ubuntu-latest
+    # A FlatPark hiccup should never fail your release.
+    continue-on-error: true
+    steps:
+      - uses: flatpark/publish-action@v1
+        with:
+          app-id: io.github.Antux912012.debian-cachy-os-kernel-updater
+          tag: ${{ github.event.inputs.tag || github.event.release.tag_name }}
