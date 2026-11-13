@@ -36,19 +36,30 @@
   </provides>
   <screenshots>
     <screenshot type="default">
-      <caption>Main Dashboard — Kernel Selection, Isolated Container Build &amp; UEFI Secure Boot Status</caption>
-      <image type="source" width="1296" height="770">https://raw.githubusercontent.com/Antux912012/debian-cachy-os-kernel-updater/main/assets/screenshots/screenshot-1-main.png</image>
+      <caption>Update &amp; Build — System Status, Kernel Selection, and Progressive Advanced Options</caption>
+      <image type="source" width="1376" height="768">https://raw.githubusercontent.com/Antux912012/debian-cachy-os-kernel-updater/main/assets/screenshots/screenshot-1-main.png</image>
     </screenshot>
     <screenshot>
-      <caption>Advanced Kernel &amp; CPU Tuning — Fine-Grained Compiler, LTO, BORE Scheduler &amp; Tick Rate</caption>
-      <image type="source" width="1296" height="770">https://raw.githubusercontent.com/Antux912012/debian-cachy-os-kernel-updater/main/assets/screenshots/screenshot-2-tuning.png</image>
+      <caption>Secure Boot &amp; MOK — Firmware Status, Kernel Verification, and Key Management</caption>
+      <image type="source" width="1376" height="768">https://raw.githubusercontent.com/Antux912012/debian-cachy-os-kernel-updater/main/assets/screenshots/screenshot-2-secureboot.png</image>
     </screenshot>
     <screenshot>
-      <caption>Live Kernel Compilation Progress &amp; Adaptive Build Log Terminal</caption>
-      <image type="source" width="1296" height="770">https://raw.githubusercontent.com/Antux912012/debian-cachy-os-kernel-updater/main/assets/screenshots/screenshot-3-compiling.png</image>
+      <caption>Kernels &amp; Logs — Installed Kernel Management, Rollback, and Build Terminal</caption>
+      <image type="source" width="1376" height="768">https://raw.githubusercontent.com/Antux912012/debian-cachy-os-kernel-updater/main/assets/screenshots/screenshot-3-kernels.png</image>
     </screenshot>
   </screenshots>
   <releases>
+    <release version="1.2.0" date="2026-11-13">
+      <description>
+        <p>Version 1.2.0 UI/UX, Kernel, Podman, and UEFI Release:</p>
+        <ul>
+          <li>Redesigned UI around a clean 3-tab Libadwaita AdwViewStack (Update &amp; Build, Secure Boot, Kernels &amp; Logs) with progressive disclosure, symbolic icons, and instant non-blocking startup</li>
+          <li>Hardened UEFI MOK password handling using 0600 temporary --pass-file passing instead of command-line arguments</li>
+          <li>Added sbverify pre-check before sbsign to prevent duplicate PE/COFF signatures, /boot free-space check, version-matched linux-headers installation, and systemd-boot fallback</li>
+          <li>Cached Podman/Docker image verification and added Debian Trixie/Sid container base detection</li>
+        </ul>
+      </description>
+    </release>
     <release version="1.1.8" date="2026-11-04">
       <description>
         <p>Version 1.1.8 release:</p>

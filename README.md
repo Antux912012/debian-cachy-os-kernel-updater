@@ -11,28 +11,28 @@ An independent, community-driven **GTK4 / Libadwaita** application designed for 
 ![GTK4](https://img.shields.io/badge/GUI-GTK4%20%2F%20Libadwaita-00A896?logo=gnome&logoColor=white)
 ![Python](https://img.shields.io/badge/Language-Python%203-3776AB?logo=python&logoColor=white)
 ![Flatpak](https://img.shields.io/badge/Flatpak-io.github.Antux912012.debian--cachy--os--kernel--updater-4A90D9?logo=flathub&logoColor=white)
-![Version](https://img.shields.io/badge/version-1.1.8-00A896.svg)
+![Version](https://img.shields.io/badge/version-1.2.0-00A896.svg)
 ![License](https://img.shields.io/badge/License-GPL--3.0--or--later-blue.svg)
 
 <p align="center">
   <img src="assets/logo_256.png" alt="Kernel Updater for CachyOS on Debian Logo" width="180">
 </p>
 
-## 📸 Application Screenshots
+## Application Screenshots
 
-### 1. Main Dashboard — Kernel Version Selection, Build Environment & Secure Boot Status
+### 1. Update & Build — System Status, Kernel Selection & Progressive Options
 <p align="center">
-  <img src="assets/screenshots/screenshot-1-main.png" alt="Main Dashboard - Kernel Selection and Secure Boot Status" width="860">
+  <img src="assets/screenshots/screenshot-1-main.png" alt="Update & Build - Kernel Selection and Progressive Advanced Options" width="860">
 </p>
 
-### 2. Advanced Kernel & CPU Tuning — Fine-Grained Compiler, LTO, BORE Scheduler & Tick Rate
+### 2. Secure Boot & MOK — Firmware Status & Key Management
 <p align="center">
-  <img src="assets/screenshots/screenshot-2-tuning.png" alt="Advanced Kernel and CPU Tuning Options" width="860">
+  <img src="assets/screenshots/screenshot-2-secureboot.png" alt="Secure Boot and MOK Key Management" width="860">
 </p>
 
-### 3. Live Kernel Compilation Progress & Adaptive Build Log Terminal
+### 3. Kernels & Logs — Installed Kernel Management & Build Terminal
 <p align="center">
-  <img src="assets/screenshots/screenshot-3-compiling.png" alt="Live Kernel Compilation and Build Log Terminal" width="860">
+  <img src="assets/screenshots/screenshot-3-kernels.png" alt="Installed Kernels, Rollback, and Build Log Terminal" width="860">
 </p>
 
 > [!CAUTION]

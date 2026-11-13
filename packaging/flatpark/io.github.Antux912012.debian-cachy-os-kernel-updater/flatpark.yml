@@ -1,0 +1,12 @@
+app-id: io.github.Antux912012.debian-cachy-os-kernel-updater
+name: CachyOS Kernel Updater (Unofficial)
+summary: Compile, optimize, install, and UEFI Secure Boot sign CachyOS kernels on Debian & Ubuntu
+category: System
+license: GPL-3.0-or-later
+homepage: https://github.com/Antux912012/debian-cachy-os-kernel-updater
+source:
+  type: github-release
+  repo: Antux912012/debian-cachy-os-kernel-updater
+  asset-pattern: "cachy-kernel-updater_.*_all\\.deb$"
+auto-update:
+  script: resolve-update.sh

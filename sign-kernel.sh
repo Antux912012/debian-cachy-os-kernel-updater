@@ -3,16 +3,45 @@
 # CachyOS Debian Kernel Updater - Co-Located MOK Certificate & Signing Tool
 # Modes:
 #   sign-kernel.sh --status <output_dir>
-#   sign-kernel.sh --install-and-sign <output_dir> [mok_password]
-#   sign-kernel.sh --sign-only <output_dir> [kernel_version_or_auto] [mok_password]
-#   sign-kernel.sh --reset-and-recreate <output_dir> [mok_password]
+#   sign-kernel.sh --install-and-sign <output_dir> [--pass-file <file> | mok_password]
+#   sign-kernel.sh --sign-only <output_dir> [kernel_version_or_auto] [--pass-file <file> | mok_password]
+#   sign-kernel.sh --reset-and-recreate <output_dir> [--pass-file <file> | mok_password]
 # ==============================================================================
 set -euo pipefail
 
-ACTION="${1:-}"
-OUTPUT_DIR="${2:-}"
-ARG3="${3:-}"
-ARG4="${4:-}"
+PASS_FILE=""
+POSITIONAL_ARGS=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --pass-file)
+            PASS_FILE="${2:-}"
+            shift 2
+            ;;
+        *)
+            POSITIONAL_ARGS+=("$1")
+            shift
+            ;;
+    esac
+done
+
+ACTION="${POSITIONAL_ARGS[0]:-}"
+OUTPUT_DIR="${POSITIONAL_ARGS[1]:-}"
+ARG3="${POSITIONAL_ARGS[2]:-}"
+ARG4="${POSITIONAL_ARGS[3]:-}"
+
+MOK_PASS_FROM_FILE=""
+cleanup_pass_file() {
+    if [[ -n "${PASS_FILE:-}" && -f "$PASS_FILE" ]]; then
+        rm -f "$PASS_FILE" || true
+    fi
+}
+trap cleanup_pass_file EXIT
+
+if [[ -n "$PASS_FILE" && -f "$PASS_FILE" ]]; then
+    MOK_PASS_FROM_FILE=$(cat "$PASS_FILE")
+    rm -f "$PASS_FILE" || true
+    PASS_FILE=""
+fi
 
 log_info()  { echo "[INFO] $*"; }
 log_ok()    { echo "[SUCCESS] $*"; }
@@ -221,7 +250,7 @@ sign_dkms_modules() {
 
 # --- MODE 2: Cancel Previous Enrollment & Recreate Certificates from Scratch ---
 if [[ "$ACTION" == "--reset-and-recreate" ]]; then
-    MOK_PASS="$ARG3"
+    MOK_PASS="${MOK_PASS_FROM_FILE:-$ARG3}"
     log_info "Canceling any pending MOK enrollment requests in UEFI..."
     mokutil --revoke-import 2>/dev/null || true
 
@@ -261,14 +290,22 @@ if [[ "$ACTION" == "--reset-and-recreate" ]]; then
     NEWEST_VMLINUZ=$(ls -t /boot/vmlinuz-*cachy* 2>/dev/null | grep -v '\.old$' | grep -v '\.signed$' | head -n1 || true)
     if [[ -n "$NEWEST_VMLINUZ" && -f "$NEWEST_VMLINUZ" ]]; then
         KVER="${NEWEST_VMLINUZ#/boot/vmlinuz-}"
-        log_info "Re-signing installed kernel ${NEWEST_VMLINUZ} with the newly created MOK key..."
-        sbsign --key "$MOK_PRIV" --cert "$MOK_PEM" --output "${NEWEST_VMLINUZ}.signed.tmp" "$NEWEST_VMLINUZ"
-        mv -f "${NEWEST_VMLINUZ}.signed.tmp" "$NEWEST_VMLINUZ"
-        chmod 644 "$NEWEST_VMLINUZ"
-        sbverify --cert "$MOK_PEM" "$NEWEST_VMLINUZ"
+        if command -v sbverify >/dev/null 2>&1 && sbverify --cert "$MOK_PEM" "$NEWEST_VMLINUZ" >/dev/null 2>&1; then
+            log_info "${NEWEST_VMLINUZ} is already signed with the active MOK key."
+        else
+            log_info "Re-signing installed kernel ${NEWEST_VMLINUZ} with the newly created MOK key..."
+            sbsign --key "$MOK_PRIV" --cert "$MOK_PEM" --output "${NEWEST_VMLINUZ}.signed.tmp" "$NEWEST_VMLINUZ"
+            mv -f "${NEWEST_VMLINUZ}.signed.tmp" "$NEWEST_VMLINUZ"
+            chmod 644 "$NEWEST_VMLINUZ"
+            sbverify --cert "$MOK_PEM" "$NEWEST_VMLINUZ"
+        fi
         sign_dkms_modules "$KVER"
         update-initramfs -u -k "$KVER"
-        command -v update-grub >/dev/null 2>&1 && update-grub
+        if command -v update-grub >/dev/null 2>&1; then
+            update-grub
+        elif command -v bootctl >/dev/null 2>&1 && [[ -d /sys/firmware/efi/efivars ]]; then
+            bootctl update >/dev/null 2>&1 || true
+        fi
         log_ok "Re-signed ${NEWEST_VMLINUZ} with the new certificate!"
     fi
 
@@ -280,18 +317,32 @@ fi
 DETECTED_KVER=""
 MOK_PASS=""
 
+check_boot_free_space() {
+    local min_mb="${1:-150}"
+    if [[ -d /boot ]]; then
+        local avail_mb
+        avail_mb=$(df -Pm /boot 2>/dev/null | awk 'NR==2 {print $4}')
+        if [[ -n "$avail_mb" && "$avail_mb" =~ ^[0-9]+$ && "$avail_mb" -lt "$min_mb" ]]; then
+            log_err "Insufficient free space in /boot (${avail_mb}MB available, at least ${min_mb}MB required). Remove an older kernel first."
+            exit 1
+        fi
+    fi
+}
+
 if [[ "$ACTION" == "--install-and-sign" ]]; then
-    MOK_PASS="$ARG3"
+    MOK_PASS="${MOK_PASS_FROM_FILE:-$ARG3}"
+    check_boot_free_space 150
     log_info "Searching for built .deb packages in ${OUTPUT_DIR}..."
     shopt -s nullglob
     IMAGE_DEBS=()
+    ALL_HEADER_DEBS=()
     HEADER_DEBS=()
     for deb in "$OUTPUT_DIR"/linux-image-*.deb; do
         [[ "$deb" == *-dbg_* ]] && continue
         IMAGE_DEBS+=("$deb")
     done
     for deb in "$OUTPUT_DIR"/linux-headers-*.deb; do
-        HEADER_DEBS+=("$deb")
+        ALL_HEADER_DEBS+=("$deb")
     done
     shopt -u nullglob
 
@@ -305,6 +356,13 @@ if [[ "$ACTION" == "--install-and-sign" ]]; then
     if [[ -n "$VMLINUZ_IN_DEB" ]]; then
         DETECTED_KVER="${VMLINUZ_IN_DEB#./boot/vmlinuz-}"
         log_info "Detected kernel version from .deb payload: ${DETECTED_KVER}"
+        for hdeb in "${ALL_HEADER_DEBS[@]}"; do
+            if [[ "$(basename "$hdeb")" == *"$DETECTED_KVER"* ]]; then
+                HEADER_DEBS+=("$hdeb")
+            fi
+        done
+    else
+        HEADER_DEBS=("${ALL_HEADER_DEBS[@]}")
     fi
 
     # Verify package integrity and compute SHA256 hashes before installation
@@ -330,7 +388,7 @@ if [[ "$ACTION" == "--install-and-sign" ]]; then
     }
 elif [[ "$ACTION" == "--sign-only" ]]; then
     TARGET_KVER="${ARG3:-auto}"
-    MOK_PASS="$ARG4"
+    MOK_PASS="${MOK_PASS_FROM_FILE:-$ARG4}"
     if [[ "$TARGET_KVER" != "auto" && -f "/boot/vmlinuz-${TARGET_KVER}" ]]; then
         DETECTED_KVER="$TARGET_KVER"
     fi
@@ -367,27 +425,38 @@ fi
 generate_certificates_in_output_dir "false"
 install_persistent_postinst_hook
 
-# 2. Sign /boot/vmlinuz-<version> using the certificate in OUTPUT_DIR
-log_info "Signing ${VMLINUZ_PATH} using ${MOK_PEM}..."
-TMP_SIGNED="${VMLINUZ_PATH}.signed.tmp"
-rm -f "$TMP_SIGNED"
-sbsign --key "$MOK_PRIV" --cert "$MOK_PEM" --output "$TMP_SIGNED" "$VMLINUZ_PATH"
-mv -f "$TMP_SIGNED" "$VMLINUZ_PATH"
-chmod 644 "$VMLINUZ_PATH"
+# 2. Sign /boot/vmlinuz-<version> using the certificate in OUTPUT_DIR (skip if already validly signed)
+if command -v sbverify >/dev/null 2>&1 && sbverify --cert "$MOK_PEM" "$VMLINUZ_PATH" >/dev/null 2>&1; then
+    log_ok "${VMLINUZ_PATH} is already validly signed with ${MOK_PEM}; skipping duplicate sbsign."
+else
+    log_info "Signing ${VMLINUZ_PATH} using ${MOK_PEM}..."
+    TMP_SIGNED="${VMLINUZ_PATH}.signed.tmp"
+    rm -f "$TMP_SIGNED"
+    sbsign --key "$MOK_PRIV" --cert "$MOK_PEM" --output "$TMP_SIGNED" "$VMLINUZ_PATH"
+    mv -f "$TMP_SIGNED" "$VMLINUZ_PATH"
+    chmod 644 "$VMLINUZ_PATH"
 
-# 3. Verify signature
-log_info "Verifying signature on ${VMLINUZ_PATH}..."
-sbverify --list "$VMLINUZ_PATH"
-sbverify --cert "$MOK_PEM" "$VMLINUZ_PATH"
-log_ok "Signature verified with ${MOK_PEM}!"
+    # 3. Verify signature
+    log_info "Verifying signature on ${VMLINUZ_PATH}..."
+    sbverify --list "$VMLINUZ_PATH"
+    sbverify --cert "$MOK_PEM" "$VMLINUZ_PATH"
+    log_ok "Signature verified with ${MOK_PEM}!"
+fi
 
 # 4. Sign DKMS / out-of-tree modules if present
 sign_dkms_modules "$DETECTED_KVER"
 
-# 5. Update initramfs and GRUB
-log_info "Updating initramfs and GRUB for ${DETECTED_KVER}..."
+# 5. Update initramfs and bootloader (GRUB or systemd-boot)
+log_info "Updating initramfs and bootloader for ${DETECTED_KVER}..."
+check_boot_free_space 100
 update-initramfs -u -k "$DETECTED_KVER"
-command -v update-grub >/dev/null 2>&1 && update-grub
+if command -v update-grub >/dev/null 2>&1; then
+    update-grub
+elif command -v kernel-install >/dev/null 2>&1 && [[ -d /efi/loader || -d /boot/efi/loader || -d /boot/loader ]]; then
+    kernel-install add "$DETECTED_KVER" "$VMLINUZ_PATH" || true
+elif command -v bootctl >/dev/null 2>&1 && [[ -d /sys/firmware/efi/efivars ]]; then
+    bootctl update >/dev/null 2>&1 || true
+fi
 
 # 6. Check / Queue MOK Enrollment
 if command -v mokutil >/dev/null 2>&1; then

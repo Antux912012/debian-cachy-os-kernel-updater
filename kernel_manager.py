@@ -6,7 +6,7 @@ import re
 import glob
 import stat
 
-APP_VERSION = "1.1.8"
+APP_VERSION = "1.2.0"
 
 class KernelManager:
     APP_VERSION = APP_VERSION
@@ -83,6 +83,7 @@ class KernelManager:
         self.host_distro = self.detect_host_distro()
         self.os_tag = "ubuntu" if self.host_distro.get("id") == "ubuntu" else "debian"
         self.container_image_tag = f"cachyos-kernel-builder:{self.os_tag}"
+        self._verified_container_images = set()
 
     def detect_host_distro(self) -> dict:
         """
@@ -188,7 +189,7 @@ class KernelManager:
         if self._can_flatpak_spawn_host():
             try:
                 res = subprocess.run(
-                    ["flatpak-spawn", "--host", "sh", "-c", f"command -v {binary}"],
+                    ["flatpak-spawn", "--host", "sh", "-c", 'command -v "$1"', "_", binary],
                     stdout=subprocess.PIPE,
                     stderr=subprocess.DEVNULL,
                     text=True,
@@ -685,7 +686,7 @@ class KernelManager:
         return None
 
     def has_container_image(self):
-        """Checks if the Debian-based builder container image is already available and has required tools."""
+        """Checks if the Debian/Ubuntu builder container image is already available and has required tools."""
         engine = self.get_container_engine()
         if not engine:
             return False
@@ -694,19 +695,28 @@ class KernelManager:
                 res = self._run_host_subproc([engine, "image", "exists", self.container_image_tag],
                                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
                 if res.returncode != 0:
+                    self._verified_container_images.discard(self.container_image_tag)
                     return False
             else:
                 res = self._run_host_subproc([engine, "inspect", "--type=image", self.container_image_tag],
                                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
                 if res.returncode != 0:
+                    self._verified_container_images.discard(self.container_image_tag)
                     return False
+
+            # Fast path: avoid spawning a container on repeated UI checks once verified
+            if self.container_image_tag in self._verified_container_images:
+                return True
 
             # Verify that essential build tools (such as libdw-dev) exist in the container image
             check_pkg = self._run_host_subproc(
                 [engine, "run", "--rm", self.container_image_tag, "dpkg-query", "-W", "-f=${Status}", "libdw-dev"],
                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=15
             )
-            return "install ok installed" in check_pkg.stdout
+            if "install ok installed" in check_pkg.stdout:
+                self._verified_container_images.add(self.container_image_tag)
+                return True
+            return False
         except Exception:
             return False
 
@@ -716,14 +726,24 @@ class KernelManager:
         if not engine:
             raise Exception("Neither podman nor docker was found. Please install podman or docker.")
 
-        if not force and self.has_container_image():
+        if force:
+            self._verified_container_images.discard(self.container_image_tag)
+        elif self.has_container_image():
             if progress_callback:
                 progress_callback(f"[✓] Container image verified: {self.container_image_tag} ({engine})")
             return True
 
         is_ubuntu = bool(self.host_distro.get("is_ubuntu"))
-        base_img = "docker.io/library/ubuntu:24.04" if is_ubuntu else "docker.io/library/debian:bookworm-slim"
-        base_label = "Ubuntu 24.04 LTS (Noble)" if is_ubuntu else "Debian Bookworm"
+        codename = (self.host_distro.get("codename") or "bookworm").lower()
+        if is_ubuntu:
+            base_img = "docker.io/library/ubuntu:24.04"
+            base_label = "Ubuntu 24.04 LTS (Noble)"
+        elif codename in ("trixie", "sid", "forky"):
+            base_img = "docker.io/library/debian:trixie-slim"
+            base_label = f"Debian {codename.capitalize()}"
+        else:
+            base_img = "docker.io/library/debian:bookworm-slim"
+            base_label = "Debian Bookworm"
 
         if progress_callback:
             progress_callback(f"\n[*] Preparing {self.container_image_tag} using {engine}...")
@@ -1893,7 +1913,18 @@ echo "=========================================================="
                 return sdir
         return None
 
-    def _run_sign_kernel_helper(self, cmd: list, cwd: str, success_msg: str, failure_prefix: str, log_callback=None) -> tuple:
+    def _create_mok_pass_file(self, mok_password: str):
+        """Writes an optional MOK password to a 0600 temp file so it is never exposed in /proc/pid/cmdline."""
+        if not mok_password:
+            return None
+        import tempfile
+        fd, pass_path = tempfile.mkstemp(prefix=".mok-pass-", dir=self.config_dir)
+        os.chmod(pass_path, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(mok_password)
+        return pass_path
+
+    def _run_sign_kernel_helper(self, cmd: list, cwd: str, success_msg: str, failure_prefix: str, log_callback=None, pass_file: str = None) -> tuple:
         """Executes sign-kernel.sh via pkexec and extracts MOK_STATUS from its output stream."""
         mok_status = "UNKNOWN"
         try:
@@ -1914,6 +1945,12 @@ echo "=========================================================="
             if log_callback:
                 log_callback(f"\n[!] {failure_prefix}: {e}\n")
             return False, f"FAILED: {e}"
+        finally:
+            if pass_file and os.path.exists(pass_file):
+                try:
+                    os.unlink(pass_file)
+                except OSError:
+                    pass
 
     def reset_and_recreate_mok_keys(self, output_dir: str = None, mok_password: str = "", log_callback=None) -> tuple:
         """
@@ -1938,9 +1975,10 @@ echo "=========================================================="
                 log_callback(f"[!] Error: sign-kernel.sh not found at {script_path}")
             return False, "SCRIPT_NOT_FOUND"
 
+        pass_file = self._create_mok_pass_file(mok_password)
         cmd = ["pkexec", "bash", script_path, "--reset-and-recreate", target_dir]
-        if mok_password:
-            cmd.append(mok_password)
+        if pass_file:
+            cmd.extend(["--pass-file", pass_file])
 
         if log_callback:
             log_callback("\n=======================================================")
@@ -1954,7 +1992,8 @@ echo "=========================================================="
             cwd=target_dir,
             success_msg="\n[✓] MOK keys reset and recreated successfully in output folder!\n",
             failure_prefix="Reset and recreate MOK keys failed",
-            log_callback=log_callback
+            log_callback=log_callback,
+            pass_file=pass_file
         )
 
     def install_and_sign_kernel_debs(self, deb_dir: str = None, sign_enabled: bool = True, mok_password: str = "", log_callback=None) -> tuple:
@@ -1979,9 +2018,10 @@ echo "=========================================================="
             return False, "SCRIPT_NOT_FOUND"
 
         if sign_enabled:
+            pass_file = self._create_mok_pass_file(mok_password)
             cmd = ["pkexec", "bash", script_path, "--install-and-sign", target_dir]
-            if mok_password:
-                cmd.append(mok_password)
+            if pass_file:
+                cmd.extend(["--pass-file", pass_file])
 
             if log_callback:
                 log_callback("\n=======================================================")
@@ -1995,7 +2035,8 @@ echo "=========================================================="
                 cwd=target_dir,
                 success_msg="\n[✓] Package installation and Secure Boot signing completed successfully!\n",
                 failure_prefix="Installation and signing failed",
-                log_callback=log_callback
+                log_callback=log_callback,
+                pass_file=pass_file
             )
         else:
             # Install without signing
@@ -2053,9 +2094,10 @@ echo "=========================================================="
             pass
 
         kver = kernel_version or "auto"
+        pass_file = self._create_mok_pass_file(mok_password)
         cmd = ["pkexec", "bash", script_path, "--sign-only", target_dir, kver]
-        if mok_password:
-            cmd.append(mok_password)
+        if pass_file:
+            cmd.extend(["--pass-file", pass_file])
 
         if log_callback:
             log_callback("\n=======================================================")
@@ -2069,7 +2111,8 @@ echo "=========================================================="
             cwd=target_dir,
             success_msg="\n[✓] Post-installation Secure Boot signing completed successfully!\n",
             failure_prefix="Secure Boot signing failed",
-            log_callback=log_callback
+            log_callback=log_callback,
+            pass_file=pass_file
         )
 
     def get_installed_kernels(self):

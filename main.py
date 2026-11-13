@@ -7,32 +7,26 @@ import gi
 
 gi.require_version('Gtk', '4.0')
 gi.require_version('Adw', '1')
-from gi.repository import Gtk, Adw, GLib, Gdk, Gio
+from gi.repository import Gtk, Adw, GLib, Gdk, Gio, GObject
 
 from kernel_manager import KernelManager
 
-APP_VERSION = "1.1.8"
+APP_VERSION = "1.2.0"
+
 
 class KernelUpdaterWindow(Adw.ApplicationWindow):
     def __init__(self, app):
-        super().__init__(application=app, title="Kernel Updater for CachyOS on Debian")
-        self.set_default_size(860, 720)
-        self.set_decorated(True)
+        super().__init__(application=app, title="CachyOS Kernel Updater")
+        self.set_default_size(880, 740)
         self.set_resizable(True)
 
-        # Ensure window decoration layout displays minimize, maximize, and close buttons
-        settings = Gtk.Settings.get_default()
-        if settings:
-            settings.set_property("gtk-decoration-layout", ":minimize,maximize,close")
-
-        # Configure icon theme search paths to guarantee symbolic window controls are found
+        # Configure icon theme search paths for bundled & system symbolic icons
         display = Gdk.Display.get_default()
         if display:
             icon_theme = Gtk.IconTheme.get_for_display(display)
             appdir = os.environ.get("APPDIR")
             if appdir:
                 icon_theme.add_search_path(os.path.join(appdir, "usr/share/icons"))
-            # Standard host, Flatpak and local assets locations
             icon_theme.add_search_path("/app/share/icons")
             icon_theme.add_search_path("/usr/share/icons")
             icon_theme.add_search_path("/usr/local/share/icons")
@@ -43,557 +37,564 @@ class KernelUpdaterWindow(Adw.ApplicationWindow):
 
         self.kernel_manager = KernelManager()
         self.versions_list = []
-        self.is_secure_boot = self.kernel_manager.get_secure_boot_status()
+        self.is_secure_boot = False
+        self._installed_kernel_rows = []
 
-        # Load custom CSS styling
         self._apply_custom_css()
+        self._register_window_actions()
 
-        # Header Bar with explicit title buttons
+        # Root ToolbarView (GNOME / Libadwaita HIG)
+        self.toolbar_view = Adw.ToolbarView()
+        self.set_content(self.toolbar_view)
+
+        # ViewStack for 3 focused pages
+        self.view_stack = Adw.ViewStack()
+
+        # HeaderBar with centered ViewSwitcherTitle
         self.header = Adw.HeaderBar()
-        self.header.set_show_start_title_buttons(True)
-        self.header.set_show_end_title_buttons(True)
+        self.view_switcher_title = Adw.ViewSwitcherTitle()
+        self.view_switcher_title.set_stack(self.view_stack)
+        self.view_switcher_title.set_title("CachyOS Kernel Updater")
+        self.header.set_title_widget(self.view_switcher_title)
 
-        self.set_icon_name("io.github.Antux912012.debian-cachy-os-kernel-updater")
-        self.window_title = Adw.WindowTitle(
-            title="Debian CachyOS Kernel Updater",
-            subtitle=f"v{APP_VERSION} — Installer, Updater & Secure Boot Manager"
+        # Left HeaderBar action: Check Updates
+        self.check_button = Gtk.Button(icon_name="view-refresh-symbolic")
+        self.check_button.set_tooltip_text("Check for CachyOS Kernel Updates")
+        self.check_button.connect("clicked", self.on_check_updates_clicked)
+        self.header.pack_start(self.check_button)
+
+        # Right HeaderBar action: Primary Menu
+        menu_model = Gio.Menu()
+        menu_model.append("Install Build Dependencies", "win.install-deps")
+        menu_model.append("Open Output Folder", "win.open-output")
+        menu_model.append("About CachyOS Kernel Updater", "win.about")
+
+        self.menu_button = Gtk.MenuButton(icon_name="open-menu-symbolic")
+        self.menu_button.set_menu_model(menu_model)
+        self.menu_button.set_tooltip_text("Main Menu")
+        self.header.pack_end(self.menu_button)
+
+        self.toolbar_view.add_top_bar(self.header)
+
+        # Missing dependencies banner (hidden until startup check detects missing deps)
+        self.deps_banner = Adw.Banner(
+            title="Required kernel build dependencies are missing for the selected environment."
         )
-        self.header.set_title_widget(self.window_title)
+        self.deps_banner.set_button_label("Install Dependencies")
+        self.deps_banner.connect("button-clicked", lambda _b: self.on_install_deps_clicked(None))
+        self.deps_banner.set_revealed(False)
+        self.toolbar_view.add_top_bar(self.deps_banner)
 
-        # About button in header bar
-        self.about_btn = Gtk.Button()
-        self.about_btn.set_icon_name("help-about-symbolic")
-        self.about_btn.set_tooltip_text("About Debian CachyOS Kernel Updater")
-        self.about_btn.connect("clicked", self.on_about_clicked)
-        self.header.pack_end(self.about_btn)
+        # Build the 3 ViewStack pages
+        self.view_stack.add_titled_with_icon(
+            self._build_update_page(), "build", "Update & Build", "system-software-install-symbolic"
+        )
+        self.view_stack.add_titled_with_icon(
+            self._build_secure_boot_page(), "secureboot", "Secure Boot", "security-high-symbolic"
+        )
+        self.view_stack.add_titled_with_icon(
+            self._build_kernels_logs_page(), "kernels", "Kernels & Logs", "utilities-terminal-symbolic"
+        )
+        self.toolbar_view.set_content(self.view_stack)
 
-        # Scrolled content container to guarantee seamless navigation on all screen sizes
-        self.scrolled_window = Gtk.ScrolledWindow()
-        self.scrolled_window.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        self.scrolled_window.set_vexpand(True)
+        # Bottom ViewSwitcherBar for narrow windows
+        self.view_switcher_bar = Adw.ViewSwitcherBar()
+        self.view_switcher_bar.set_stack(self.view_stack)
+        self.view_switcher_title.bind_property(
+            "title-visible", self.view_switcher_bar, "reveal", GObject.BindingFlags.SYNC_CREATE
+        )
+        self.toolbar_view.add_bottom_bar(self.view_switcher_bar)
 
-        self.content_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16)
-        self.content_box.set_margin_top(16)
-        self.content_box.set_margin_bottom(24)
-        self.content_box.set_margin_start(20)
-        self.content_box.set_margin_end(20)
-        self.scrolled_window.set_child(self.content_box)
+        # Initialize adaptive terminal theme
+        self.style_manager = Adw.StyleManager.get_default()
+        self.invert_terminal_theme = False
+        if self.style_manager:
+            self.style_manager.connect("notify::dark", self._on_theme_changed)
+        self._update_terminal_theme()
 
-        # Main Layout using Adw.ToolbarView if available, fallback to Gtk.Box for older Libadwaita
-        if hasattr(Adw, "ToolbarView"):
-            self.toolbar_view = Adw.ToolbarView()
-            self.set_content(self.toolbar_view)
-            self.toolbar_view.add_top_bar(self.header)
-            self.toolbar_view.set_content(self.scrolled_window)
-        else:
-            main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-            main_box.append(self.header)
-            main_box.append(self.scrolled_window)
-            self.set_content(main_box)
+        # Defer all host/network/subprocess startup checks so the window opens instantaneously
+        GLib.idle_add(self._schedule_startup_checks)
 
-        # =========================================================================
-        # Top System Status Banner Card (With Branding Logo & Version Badge)
-        # =========================================================================
-        self.status_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
-        self.status_box.add_css_class("card")
-        self.status_box.add_css_class("status-card")
-        self.status_box.set_margin_bottom(4)
-
-        banner_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=16)
-        banner_row.set_margin_top(12)
-        banner_row.set_margin_bottom(12)
-        banner_row.set_margin_start(16)
-        banner_row.set_margin_end(16)
-
-        # Application Logo Image in Banner
-        logo_candidates = [
-            os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "logo_128.png"),
-            "/app/share/icons/hicolor/128x128/apps/io.github.Antux912012.debian-cachy-os-kernel-updater.png",
-            "/usr/share/icons/hicolor/128x128/apps/io.github.Antux912012.debian-cachy-os-kernel-updater.png",
+    def _register_window_actions(self):
+        actions = [
+            ("install-deps", lambda *_: self.on_install_deps_clicked(None)),
+            ("open-output", lambda *_: self.on_open_output_clicked(None)),
+            ("about", self.on_about_clicked),
         ]
-        logo_png_path = next((p for p in logo_candidates if os.path.exists(p)), "")
+        for name, cb in actions:
+            act = Gio.SimpleAction.new(name, None)
+            act.connect("activate", cb)
+            self.add_action(act)
 
-        if logo_png_path:
-            self.banner_logo = Gtk.Image.new_from_file(logo_png_path)
-        else:
-            self.banner_logo = Gtk.Image.new_from_icon_name("io.github.Antux912012.debian-cachy-os-kernel-updater")
-        self.banner_logo.set_pixel_size(56)
-        self.banner_logo.set_valign(Gtk.Align.CENTER)
-        banner_row.append(self.banner_logo)
+    def _build_update_page(self) -> Gtk.Widget:
+        scrolled = Gtk.ScrolledWindow()
+        scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
 
-        inner_status_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
-        inner_status_box.set_hexpand(True)
+        clamp = Adw.Clamp(maximum_size=680, tightening_threshold=520)
+        clamp.set_margin_top(20)
+        clamp.set_margin_bottom(24)
+        clamp.set_margin_start(16)
+        clamp.set_margin_end(16)
 
-        title_badge_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
-        self.app_brand_label = Gtk.Label(label="Debian CachyOS Kernel Updater", halign=Gtk.Align.START)
-        self.app_brand_label.add_css_class("title-4")
-        self.app_brand_label.add_css_class("brand-title")
-        title_badge_row.append(self.app_brand_label)
+        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=20)
+        clamp.set_child(content)
+        scrolled.set_child(clamp)
 
-        self.version_badge = Gtk.Label(label=f"v{APP_VERSION}")
-        self.version_badge.add_css_class("version-badge")
-        self.version_badge.set_valign(Gtk.Align.CENTER)
-        title_badge_row.append(self.version_badge)
-        inner_status_box.append(title_badge_row)
-
+        # 1. System Status Card
+        status_group = Adw.PreferencesGroup(title="System Status")
         current_kernel = self.kernel_manager.get_current_kernel_version()
         host_os_name = self.kernel_manager.host_distro.get("name", "Debian/Ubuntu")
-        self.status_label = Gtk.Label(label=f"Current Kernel: {current_kernel}  •  Host OS: {host_os_name}", halign=Gtk.Align.START)
-        self.status_label.add_css_class("body")
-        inner_status_box.append(self.status_label)
 
-        status_row_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
-        self.latest_label = Gtk.Label(label="Latest CachyOS Kernel: Checking official GitHub...", halign=Gtk.Align.START)
-        self.latest_label.add_css_class("caption")
-        self.latest_label.set_hexpand(True)
-        status_row_box.append(self.latest_label)
+        running_row = Adw.ActionRow(title="Running Kernel", subtitle=f"{current_kernel} ({host_os_name})")
+        self.match_status_pill = Gtk.Label(label="Checking...")
+        self.match_status_pill.add_css_class("sb-pill-inactive")
+        self.match_status_pill.set_valign(Gtk.Align.CENTER)
+        running_row.add_suffix(self.match_status_pill)
+        status_group.add(running_row)
 
-        # Live Secure Boot pill in top banner
-        self.sb_banner_pill = Gtk.Label(label="[Secure Boot: Active]" if self.is_secure_boot else "[Secure Boot: Off]")
-        self.sb_banner_pill.add_css_class("sb-pill-active" if self.is_secure_boot else "sb-pill-inactive")
+        self.latest_row = Adw.ActionRow(title="Latest CachyOS Release", subtitle="Querying GitHub...")
+        status_group.add(self.latest_row)
+
+        self.sb_summary_row = Adw.ActionRow(title="UEFI Secure Boot & MOK", subtitle="Checking firmware state...")
+        self.sb_banner_pill = Gtk.Label(label="Checking...")
+        self.sb_banner_pill.add_css_class("sb-pill-inactive")
         self.sb_banner_pill.set_valign(Gtk.Align.CENTER)
-        status_row_box.append(self.sb_banner_pill)
-        inner_status_box.append(status_row_box)
+        self.sb_summary_row.add_suffix(self.sb_banner_pill)
+        status_group.add(self.sb_summary_row)
 
-        self.match_status_label = Gtk.Label(label="", halign=Gtk.Align.START)
-        self.match_status_label.add_css_class("caption")
-        inner_status_box.append(self.match_status_label)
+        content.append(status_group)
 
-        banner_row.append(inner_status_box)
-        self.status_box.append(banner_row)
-        self.content_box.append(self.status_box)
+        # 2. Step 1: Kernel & Performance Profile
+        step1_group = Adw.PreferencesGroup(
+            title="1. Kernel & Performance Profile",
+            description="Choose the kernel series, CPU scheduler, and target instruction set."
+        )
 
-        # =========================================================================
-        # Section 1: "Step 1 — Choose Kernel Version & Build Environment"
-        # =========================================================================
-        self.step1_group = Adw.PreferencesGroup()
-        self.step1_group.set_title("Step 1 — Choose Kernel Version &amp; Build Environment")
-        self.step1_group.set_description("Select the CachyOS kernel release to download and how you want to compile it.")
-
-        # 1. Kernel Version Dropdown
-        self.kernel_version_row = Adw.ComboRow()
-        self.kernel_version_row.set_title("Kernel Version")
-        self.kernel_version_row.set_subtitle("Pre-selects latest Stable release; testing versions marked as (Experimental)")
-        self.kernel_version_row.set_tooltip_text("Select the CachyOS kernel release to download and compile. Pre-selects the latest stable release.")
-        initial_version = self.kernel_manager.latest_version or "7.3.0-4"
-        self.version_string_list = Gtk.StringList.new([f"{initial_version} (Stable)"])
+        self.kernel_version_row = Adw.ComboRow(title="Kernel Series")
+        self.version_string_list = Gtk.StringList.new(["Fetching available releases..."])
         self.kernel_version_row.set_model(self.version_string_list)
-        self.kernel_version_row.set_selected(0)
         self.kernel_version_row.connect("notify::selected", self.on_version_selected)
-        self.step1_group.add(self.kernel_version_row)
+        step1_group.add(self.kernel_version_row)
 
-        # 2. Build Mode Dropdown (Native Host vs Isolated Container)
-        self.build_mode_row = Adw.ComboRow()
-        self.build_mode_row.set_title("Build Environment")
-        self.build_mode_row.set_subtitle("Native Host Build (Recommended — Fastest) keeps build times lowest")
-        self.build_mode_row.set_tooltip_text(
-            "Native Host Build: Compiles directly on your system for maximum speed.\n"
-            "Isolated Container Build: Uses Podman or Docker (Debian Bookworm container) to keep host packages clean."
+        self.scheduler_row = Adw.ComboRow(
+            title="CPU Scheduler",
+            subtitle="BORE improves desktop responsiveness under heavy load"
         )
-        build_mode_options = [
-            "Native Host Build (Recommended — Fastest)",
-            "Isolated Container Build (Podman / Docker — Keeps host system clean)"
-        ]
-        self.build_mode_row.set_model(Gtk.StringList.new(build_mode_options))
-        self.build_mode_row.set_selected(0) # Default: Native Host Build
-        self.build_mode_row.connect("notify::selected", self.on_build_mode_selected)
-        self.step1_group.add(self.build_mode_row)
+        self.scheduler_row.set_model(Gtk.StringList.new([
+            "BORE (Recommended for Desktop)",
+            "EEVDF (Standard Upstream)"
+        ]))
+        self.scheduler_row.set_selected(0)
+        step1_group.add(self.scheduler_row)
 
-        self.content_box.append(self.step1_group)
-
-        # =========================================================================
-        # Section 2: "Step 2 — Recommended System & Boot Safety Options"
-        # =========================================================================
-        self.step2_group = Adw.PreferencesGroup()
-        self.step2_group.set_title("Step 2 — Recommended System &amp; Boot Safety Options")
-        self.step2_group.set_description("Safe defaults are already ticked for maximum stability and compatibility across systems.")
-
-        # 1. Use Current System Hardware Config (localmodconfig / Host .config base)
-        self.hw_config_row = Adw.ActionRow()
-        self.hw_config_row.set_title("Use Current System Hardware Config (localmodconfig)")
-        self.hw_config_row.set_subtitle("Tailors drivers to machine while preserving Wi-Fi, Bluetooth, storage &amp; filesystem baselines.")
-        self.hw_config_row.set_tooltip_text("Scans active hardware drivers from the running system and trims unused drivers, while ensuring Wi-Fi, Bluetooth, crypto, storage, and filesystem drivers are always preserved.")
-        self.hw_config_check = Gtk.CheckButton()
-        self.hw_config_check.set_active(True)
-        self.hw_config_check.set_tooltip_text("Scans active hardware drivers from the running system and trims unused drivers, while ensuring Wi-Fi, Bluetooth, crypto, storage, and filesystem drivers are always preserved.")
-        self.hw_config_row.add_prefix(self.hw_config_check)
-        self.hw_config_row.set_activatable_widget(self.hw_config_check)
-        self.step2_group.add(self.hw_config_row)
-
-        # 2. Optimize Build Size & RAM (Disable Debug Symbols)
-        self.strip_debug_row = Adw.ActionRow()
-        self.strip_debug_row.set_title("Optimize Build Size &amp; RAM (Disable Debug Symbols)")
-        self.strip_debug_row.set_subtitle("Prevents disk space exhaustion and memory crashes during compilation.")
-        self.strip_debug_row.set_tooltip_text("Enables DEBUG_INFO_NONE. Reduces required disk space from ~35 GB down to ~5 GB, prevents out-of-memory linker crashes, and speeds up compilation.")
-        self.strip_debug_check = Gtk.CheckButton()
-        self.strip_debug_check.set_active(True)
-        self.strip_debug_check.set_tooltip_text("Enables DEBUG_INFO_NONE. Reduces required disk space from ~35 GB down to ~5 GB, prevents out-of-memory linker crashes, and speeds up compilation.")
-        self.strip_debug_row.add_prefix(self.strip_debug_check)
-        self.strip_debug_row.set_activatable_widget(self.strip_debug_check)
-        self.step2_group.add(self.strip_debug_row)
-
-        # 3. Auto-Install .deb Packages After Build
-        self.auto_install_row = Adw.ActionRow()
-        self.auto_install_row.set_title("Install Kernel Automatically When Build Finishes")
-        self.auto_install_row.set_subtitle("Installs the generated linux-image and linux-headers .deb packages.")
-        self.auto_install_row.set_tooltip_text("Automatically prompts to install the compiled Debian packages using pkexec when compilation completes.")
-        self.auto_install_check = Gtk.CheckButton()
-        self.auto_install_check.set_active(True)
-        self.auto_install_check.set_tooltip_text("Automatically prompts to install the compiled Debian packages using pkexec when compilation completes.")
-        self.auto_install_row.add_prefix(self.auto_install_check)
-        self.auto_install_row.set_activatable_widget(self.auto_install_check)
-        self.step2_group.add(self.auto_install_row)
-
-        # 4. Sign Kernel in /boot After Installation (UEFI Secure Boot)
-        self.sign_postinst_row = Adw.ActionRow()
-        self.sign_postinst_row.set_title("Sign Kernel for UEFI Secure Boot After Installation")
-        self.sign_postinst_row.set_subtitle("Signs /boot/vmlinuz with your Machine Owner Key (MOK) so your PC boots safely with Secure Boot on.")
-        self.sign_postinst_row.set_tooltip_text("Cryptographically signs the installed kernel image and DKMS modules with your local Machine Owner Key for UEFI Secure Boot.")
-        self.sign_postinst_check = Gtk.CheckButton()
-        # Pre-ticked as safe default across systems
-        self.sign_postinst_check.set_active(True)
-        self.sign_postinst_check.set_tooltip_text("Cryptographically signs the installed kernel image and DKMS modules with your local Machine Owner Key for UEFI Secure Boot.")
-        self.sign_postinst_row.add_prefix(self.sign_postinst_check)
-        self.sign_postinst_row.set_activatable_widget(self.sign_postinst_check)
-
-        # Live status pill next to Secure Boot option
-        self.sb_row_pill = Gtk.Label(label="[Secure Boot: Active]" if self.is_secure_boot else "[Secure Boot: Off]")
-        self.sb_row_pill.add_css_class("sb-pill-active" if self.is_secure_boot else "sb-pill-inactive")
-        self.sb_row_pill.set_valign(Gtk.Align.CENTER)
-        self.sign_postinst_row.add_suffix(self.sb_row_pill)
-        self.step2_group.add(self.sign_postinst_row)
-
-        # 5. Certificates & Packages Location Row
-        self.cert_folder_row = Adw.ActionRow()
-        self.cert_folder_row.set_title("MOK Certificates &amp; Packages Location")
-        initial_target_dir = self.kernel_manager.get_output_kernel_dir(is_native=False)
-        self.cert_folder_row.set_subtitle(f"{initial_target_dir} (MOK.der, MOK.pem, MOK.priv)")
-        self.cert_folder_row.set_tooltip_text("Directory where local Machine Owner Keys (MOK) and compiled .deb packages are stored.")
-
-        self.open_cert_button = Gtk.Button(label="📂 Open Folder")
-        self.open_cert_button.set_valign(Gtk.Align.CENTER)
-        self.open_cert_button.connect("clicked", self.on_open_certs_folder_clicked)
-        self.open_cert_button.set_tooltip_text("Open the folder containing MOK certificates and Debian packages in your file manager.")
-        self.cert_folder_row.add_suffix(self.open_cert_button)
-
-        self.reset_mok_row_button = Gtk.Button(label="🔄 Reset MOK Keys")
-        self.reset_mok_row_button.set_valign(Gtk.Align.CENTER)
-        self.reset_mok_row_button.add_css_class("flat")
-        self.reset_mok_row_button.connect("clicked", self.on_reset_mok_clicked)
-        self.reset_mok_row_button.set_tooltip_text("Cancels any previous MOK enrollment, deletes old certificates, generates brand-new MOK keys in the output folder, and re-signs your kernel.")
-        self.cert_folder_row.add_suffix(self.reset_mok_row_button)
-        self.step2_group.add(self.cert_folder_row)
-
-        self.content_box.append(self.step2_group)
-
-        # =========================================================================
-        # Collapsible Expander: "▸ Advanced Kernel & CPU Tuning (Optional)"
-        # =========================================================================
-        self.tuning_expander = Gtk.Expander(label="▸ Advanced Kernel & CPU Tuning (Optional)")
-        self.tuning_expander.set_expanded(False) # Collapsed by default
-        self.tuning_expander.add_css_class("card")
-        self.tuning_expander.set_margin_top(4)
-        self.tuning_expander.set_margin_bottom(4)
-
-        tuning_group = Adw.PreferencesGroup()
-        tuning_group.set_title("Fine-Grained Compiler &amp; Hardware Tweaks")
-        tuning_group.set_description("Optional tweaks for power users. Safe defaults are already active.")
-
-        # 1. CPU Architecture Target
-        self.cpu_arch_row = Adw.ComboRow()
-        self.cpu_arch_row.set_title("CPU Architecture Target")
-        self.cpu_arch_row.set_subtitle("Instruction set optimization level")
-        self.cpu_arch_row.set_tooltip_text(
-            "Generic: Safe for all modern CPUs; avoids illegal instruction boot panics across machines.\n"
-            "Native: Enables -march=native tailored specifically for this machine's CPU model.\n"
-            "x86-64-v3: Optimizes for modern CPUs supporting AVX2 instructions."
+        self.cpu_arch_row = Adw.ComboRow(
+            title="CPU Optimization",
+            subtitle="Choose Native for this PC or x86-64-v3 / Generic for portability"
         )
-        arch_options = [
-            "Generic x86-64 / x86-64-v2 (Safe for all modern CPUs) [Default]",
-            "Native (Current CPU only — march=native)",
-            "x86-64-v3 (Modern CPUs with AVX2)"
-        ]
-        self.cpu_arch_row.set_model(Gtk.StringList.new(arch_options))
-        self.cpu_arch_row.set_selected(0) # Default: Generic
+        self.cpu_arch_row.set_model(Gtk.StringList.new([
+            "Generic x86-64 (Universal)",
+            "Native (-march=native, This PC Only)",
+            "Generic x86-64-v3 (Modern AVX2 CPUs)"
+        ]))
+        self.cpu_arch_row.set_selected(0)
         self.cpu_arch_row.connect("notify::selected", self.on_arch_selected)
-        tuning_group.add(self.cpu_arch_row)
+        step1_group.add(self.cpu_arch_row)
 
-        # 2. Compiler & LTO Mode
-        self.compiler_lto_row = Adw.ComboRow()
-        self.compiler_lto_row.set_title("Compiler &amp; LTO Mode")
-        self.compiler_lto_row.set_subtitle("Toolchain and Link-Time Optimization")
-        self.compiler_lto_row.set_tooltip_text(
-            "GCC (No LTO): Standard compilation; safest, lowest-memory choice across varied Debian hardware.\n"
-            "Clang (ThinLTO Disabled): Compiles kernel with LLVM/Clang without LTO overhead.\n"
-            "Clang + ThinLTO: Faster binary with moderate RAM consumption during link phase.\n"
-            "Clang + Full LTO: Aggressive whole-program optimization; requires high system RAM."
+        content.append(step1_group)
+
+        # 3. Step 2: Advanced Kernel & Build Options (Progressive Disclosure)
+        step2_group = Adw.PreferencesGroup()
+        self.advanced_expander = Adw.ExpanderRow(
+            title="2. Advanced Kernel & Build Options",
+            subtitle="Build environment, Clang ThinLTO, timer tick rate, and packaging"
         )
-        lto_options = [
-            "GCC (Standard - No LTO — Fastest & Safest) [Default]",
-            "Clang (ThinLTO Disabled)",
-            "Clang + ThinLTO (Optimized)",
-            "Clang + Full LTO (Aggressive — High RAM)"
-        ]
-        self.compiler_lto_row.set_model(Gtk.StringList.new(lto_options))
-        self.compiler_lto_row.set_selected(0) # Default: GCC
-        tuning_group.add(self.compiler_lto_row)
 
-        # 3. CPU Scheduler
-        self.scheduler_row = Adw.ComboRow()
-        self.scheduler_row.set_title("CPU Scheduler")
-        self.scheduler_row.set_subtitle("Process scheduling algorithm")
-        self.scheduler_row.set_tooltip_text(
-            "BORE: Burst-Oriented Response Enhancer. Default CachyOS scheduler; stable and responsive for desktop & gaming.\n"
-            "EEVDF: Earliest Eligible Virtual Deadline First. Standard upstream Linux kernel scheduler."
+        self.build_mode_row = Adw.ComboRow(
+            title="Build Environment",
+            subtitle="Native host build is fastest; container isolates build dependencies"
         )
-        scheduler_options = [
-            "BORE (Burst-Oriented Response Enhancer) [Default]",
-            "EEVDF (Standard Linux Scheduler)"
-        ]
-        self.scheduler_row.set_model(Gtk.StringList.new(scheduler_options))
-        self.scheduler_row.set_selected(0) # Default: BORE
-        tuning_group.add(self.scheduler_row)
+        self.build_mode_row.set_model(Gtk.StringList.new([
+            "Native Host Build (Fastest)",
+            "Isolated Container (Podman / Docker)"
+        ]))
+        self.build_mode_row.set_selected(0)
+        self.build_mode_row.connect("notify::selected", self.on_build_mode_selected)
+        self.advanced_expander.add_row(self.build_mode_row)
 
-        # 4. Tick Rate & Preemption
-        self.tick_rate_row = Adw.ComboRow()
-        self.tick_rate_row.set_title("Tick Rate &amp; Preemption")
-        self.tick_rate_row.set_subtitle("Timer interrupt frequency and idle power saving")
-        self.tick_rate_row.set_tooltip_text(
-            "1000 Hz + Full Tickless Idle: Optimal balance of low latency and laptop battery efficiency.\n"
-            "500 Hz / 300 Hz: Lower timer interrupt overhead for specialized server/virtualized workloads."
+        self.compiler_lto_row = Adw.ComboRow(
+            title="Compiler & LTO",
+            subtitle="Clang ThinLTO provides strong performance with fast link times"
         )
-        tick_options = [
-            "1000 Hz + Full Tickless Idle [Default]",
-            "500 Hz + Full Tickless Idle",
-            "300 Hz + Full Tickless Idle",
-            "250 Hz + Full Tickless Idle"
-        ]
-        self.tick_rate_row.set_model(Gtk.StringList.new(tick_options))
-        self.tick_rate_row.set_selected(0) # Default: 1000 Hz
-        tuning_group.add(self.tick_rate_row)
+        self.compiler_lto_row.set_model(Gtk.StringList.new([
+            "GCC (Standard)",
+            "Clang (No LTO)",
+            "Clang + ThinLTO (Recommended)",
+            "Clang + Full LTO"
+        ]))
+        self.compiler_lto_row.set_selected(2)
+        self.advanced_expander.add_row(self.compiler_lto_row)
 
-        # 5. Parallel Build Threads (-j)
+        self.tick_rate_row = Adw.ComboRow(
+            title="Timer Tick Rate",
+            subtitle="Higher tick rates lower latency; 250 Hz maximizes battery life"
+        )
+        self.tick_rate_row.set_model(Gtk.StringList.new([
+            "1000 Hz (Desktop / Gaming)",
+            "500 Hz (Balanced)",
+            "300 Hz",
+            "250 Hz (Power Saving)"
+        ]))
+        self.tick_rate_row.set_selected(0)
+        self.advanced_expander.add_row(self.tick_rate_row)
+
         cpu_count = os.cpu_count() or 4
-        safe_default_threads = max(1, cpu_count - 1)
-
-        self.threads_row = Adw.ActionRow()
-        self.threads_row.set_title("Parallel Build Threads (-j)")
-        self.threads_row.set_subtitle(f"Default: {safe_default_threads} (leaves 1 CPU core free to prevent UI lockup)")
-        self.threads_row.set_tooltip_text("Controls make -j concurrency. Default leaves one CPU core free so your desktop never stutters during compilation.")
-        
-        threads_adj = Gtk.Adjustment(
-            value=safe_default_threads,
-            lower=1,
-            upper=cpu_count,
-            step_increment=1,
-            page_increment=2
+        default_threads = max(1, cpu_count - 1)
+        threads_row = Adw.ActionRow(
+            title="Parallel Build Threads",
+            subtitle=f"Leaves 1 CPU core free on your {cpu_count}-core system"
         )
-        self.threads_spin = Gtk.SpinButton(adjustment=threads_adj, numeric=True)
+        adj = Gtk.Adjustment(value=default_threads, lower=1, upper=max(1, cpu_count * 2), step_increment=1, page_increment=2)
+        self.threads_spin = Gtk.SpinButton(adjustment=adj)
         self.threads_spin.set_valign(Gtk.Align.CENTER)
-        self.threads_spin.set_tooltip_text("Controls make -j concurrency. Default leaves one CPU core free so your desktop never stutters during compilation.")
-        self.threads_row.add_suffix(self.threads_spin)
-        tuning_group.add(self.threads_row)
+        threads_row.add_suffix(self.threads_spin)
+        self.advanced_expander.add_row(threads_row)
 
-        # 6. Output Package Folder Row
-        self.output_row = Adw.ActionRow()
-        self.output_row.set_title("Output Package Folder")
-        self.output_row.set_subtitle(self.kernel_manager.get_output_kernel_dir(is_native=False))
-        self.output_row.set_tooltip_text("Directory where compiled Debian (.deb) packages and configuration files are stored.")
+        self.hw_config_row = Adw.ActionRow(
+            title="Optimize Drivers for This Hardware",
+            subtitle="Uses localmodconfig while preserving Wi-Fi, Bluetooth, NVMe & filesystem baselines"
+        )
+        self.hw_config_check = Gtk.Switch(active=True, valign=Gtk.Align.CENTER)
+        self.hw_config_row.add_suffix(self.hw_config_check)
+        self.hw_config_row.set_activatable_widget(self.hw_config_check)
+        self.advanced_expander.add_row(self.hw_config_row)
 
-        self.open_output_button = Gtk.Button(label="Open Folder")
-        self.open_output_button.set_valign(Gtk.Align.CENTER)
-        self.open_output_button.connect("clicked", self.on_open_output_clicked)
-        self.open_output_button.set_tooltip_text("Open the output Debian packages folder in your file manager.")
-        self.output_row.add_suffix(self.open_output_button)
-        tuning_group.add(self.output_row)
+        strip_row = Adw.ActionRow(
+            title="Strip Debug Symbols",
+            subtitle="Reduces .deb package size and speeds up installation"
+        )
+        self.strip_debug_check = Gtk.Switch(active=True, valign=Gtk.Align.CENTER)
+        strip_row.add_suffix(self.strip_debug_check)
+        strip_row.set_activatable_widget(self.strip_debug_check)
+        self.advanced_expander.add_row(strip_row)
 
-        self.tuning_expander.set_child(tuning_group)
-        self.content_box.append(self.tuning_expander)
+        auto_inst_row = Adw.ActionRow(
+            title="Install Automatically After Build",
+            subtitle="Installs built .deb packages via pkexec dpkg -i"
+        )
+        self.auto_install_check = Gtk.Switch(active=True, valign=Gtk.Align.CENTER)
+        auto_inst_row.add_suffix(self.auto_install_check)
+        auto_inst_row.set_activatable_widget(self.auto_install_check)
+        self.advanced_expander.add_row(auto_inst_row)
 
-        # =========================================================================
-        # Section 3: "Step 3 — Build, Install & Sign"
-        # =========================================================================
-        self.step3_group = Adw.PreferencesGroup()
-        self.step3_group.set_title("Step 3 — Build, Install &amp; Sign")
-        self.step3_group.set_description("Click 'Start Kernel Build &amp; Install' below. The app will download, configure, compile, install, and sign your kernel automatically.")
+        sign_row = Adw.ActionRow(
+            title="Sign for UEFI Secure Boot (MOK)",
+            subtitle="Signs vmlinuz and DKMS modules with your local Machine Owner Key"
+        )
+        self.sign_postinst_check = Gtk.Switch(active=True, valign=Gtk.Align.CENTER)
+        sign_row.add_suffix(self.sign_postinst_check)
+        sign_row.set_activatable_widget(self.sign_postinst_check)
+        self.advanced_expander.add_row(sign_row)
 
-        # Primary Action Bar
-        self.action_card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
-        self.action_card.add_css_class("card")
-        self.action_card.set_margin_top(4)
+        default_out = self.kernel_manager.get_output_kernel_dir(is_native=False)
+        self.output_row = Adw.ActionRow(title="Output Packages Directory", subtitle=default_out)
+        open_out_btn = Gtk.Button(icon_name="folder-open-symbolic", valign=Gtk.Align.CENTER)
+        open_out_btn.add_css_class("flat")
+        open_out_btn.set_tooltip_text("Open Output Directory")
+        open_out_btn.connect("clicked", self.on_open_output_clicked)
+        self.output_row.add_suffix(open_out_btn)
+        self.advanced_expander.add_row(self.output_row)
 
-        action_card_inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14)
-        action_card_inner.set_margin_top(16)
-        action_card_inner.set_margin_bottom(16)
-        action_card_inner.set_margin_start(16)
-        action_card_inner.set_margin_end(16)
+        step2_group.add(self.advanced_expander)
+        content.append(step2_group)
 
-        # Primary Button (Prominent & Suggested)
-        self.start_build_button = Gtk.Button(label="🚀 Start Kernel Build & Install")
+        # 4. Primary Action Area + Progress
+        action_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12, halign=Gtk.Align.CENTER)
+        action_box.set_margin_top(4)
+
+        self.start_build_button = Gtk.Button()
         self.start_build_button.add_css_class("suggested-action")
         self.start_build_button.add_css_class("pill")
-        self.start_build_button.set_halign(Gtk.Align.CENTER)
-        self.start_build_button.set_size_request(320, 48)
-        self.start_build_button.set_tooltip_text("Starts automated download, configuration, compilation, installation, and Secure Boot signing.")
+        start_content = Adw.ButtonContent(icon_name="system-run-symbolic", label="Start Kernel Build & Install")
+        self.start_build_button.set_child(start_content)
+        self.start_build_button.set_sensitive(False)
         self.start_build_button.connect("clicked", self.on_start_build_clicked)
-        action_card_inner.append(self.start_build_button)
+        action_box.append(self.start_build_button)
 
-        # Secondary Utility Buttons Box
-        self.secondary_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        self.secondary_box.set_halign(Gtk.Align.CENTER)
-
-        self.install_existing_button = Gtk.Button(label="Install Existing .deb")
-        self.install_existing_button.set_tooltip_text("Install existing compiled linux-image and linux-headers Debian packages.")
+        self.install_existing_button = Gtk.Button()
+        self.install_existing_button.add_css_class("pill")
+        inst_content = Adw.ButtonContent(icon_name="document-open-symbolic", label="Install Existing .deb")
+        self.install_existing_button.set_child(inst_content)
         self.install_existing_button.connect("clicked", self.on_apply_clicked)
-        self.secondary_box.append(self.install_existing_button)
+        action_box.append(self.install_existing_button)
 
-        self.sign_installed_action_button = Gtk.Button(label="🔒 Sign Installed Kernel (Secure Boot)")
-        self.sign_installed_action_button.set_tooltip_text("Sign currently installed /boot/vmlinuz and DKMS modules with MOK, and stage UEFI enrollment in a single atomic transaction.")
-        self.sign_installed_action_button.connect("clicked", self.on_sign_installed_kernel_clicked)
-        self.secondary_box.append(self.sign_installed_action_button)
+        content.append(action_box)
 
-        self.reset_mok_button = Gtk.Button(label="🔄 Reset MOK Keys")
-        self.reset_mok_button.set_tooltip_text("Cancels any previous MOK enrollment, deletes old keys, generates fresh MOK keypair in output folder, and re-signs kernel.")
-        self.reset_mok_button.connect("clicked", self.on_reset_mok_clicked)
-        self.secondary_box.append(self.reset_mok_button)
-
-        self.check_button = Gtk.Button(label="Check Updates")
-        self.check_button.set_tooltip_text("Query official CachyOS repositories for newly released kernel versions.")
-        self.check_button.connect("clicked", self.on_check_updates_clicked)
-        self.secondary_box.append(self.check_button)
-
-        self.deps_button = Gtk.Button(label="Install Dependencies")
-        self.deps_button.set_tooltip_text("Verify and install required build or container dependencies via pkexec apt-get.")
-        self.deps_button.connect("clicked", self.on_install_deps_clicked)
-        self.secondary_box.append(self.deps_button)
-
-        self.rollback_button = Gtk.Button(label="Rollback Kernel")
-        self.rollback_button.add_css_class("destructive-action")
-        self.rollback_button.set_tooltip_text("Safely remove an installed kernel package and restore previous kernel.")
-        self.rollback_button.connect("clicked", self.on_rollback_clicked)
-        self.secondary_box.append(self.rollback_button)
-
-        action_card_inner.append(self.secondary_box)
-
-        # Progress Indicator & Step Status Label
         progress_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
-        progress_box.set_margin_top(4)
-
         self.stage_status_label = Gtk.Label(
-            label="Ready to build. Click '🚀 Start Kernel Build & Install' to begin.",
-            halign=Gtk.Align.START
+            label="Ready to configure and compile CachyOS kernel.",
+            halign=Gtk.Align.CENTER
         )
-        self.stage_status_label.add_css_class("stage-label")
-        self.stage_status_label.set_wrap(True)
+        self.stage_status_label.add_css_class("dim-label")
+        self.stage_status_label.add_css_class("caption")
         progress_box.append(self.stage_status_label)
 
         self.stage_progress_bar = Gtk.ProgressBar()
         self.stage_progress_bar.set_fraction(0.0)
-        self.stage_progress_bar.set_show_text(False)
         progress_box.append(self.stage_progress_bar)
+        content.append(progress_box)
 
-        action_card_inner.append(progress_box)
-        self.action_card.append(action_card_inner)
-        self.content_box.append(self.action_card)
+        return scrolled
 
-        # =========================================================================
-        # Collapsible Detailed Build Log Expander
-        # =========================================================================
-        self.log_expander = Gtk.Expander(label="Show Detailed Build Log")
-        self.log_expander.set_expanded(False) # Collapsed by default so users aren't overwhelmed
-        self.log_expander.add_css_class("card")
-        self.log_expander.set_margin_top(4)
+    def _build_secure_boot_page(self) -> Gtk.Widget:
+        scrolled = Gtk.ScrolledWindow()
+        scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
 
-        log_expander_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
-        log_expander_box.set_margin_top(10)
-        log_expander_box.set_margin_bottom(12)
-        log_expander_box.set_margin_start(12)
-        log_expander_box.set_margin_end(12)
+        clamp = Adw.Clamp(maximum_size=680, tightening_threshold=520)
+        clamp.set_margin_top(20)
+        clamp.set_margin_bottom(24)
+        clamp.set_margin_start(16)
+        clamp.set_margin_end(16)
 
-        # Log toolbar with Copy Error Log button
-        log_toolbar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        log_desc_label = Gtk.Label(label="Compiler terminal stream & execution history:", halign=Gtk.Align.START)
-        log_desc_label.add_css_class("caption")
-        log_desc_label.set_hexpand(True)
-        log_toolbar.append(log_desc_label)
+        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=20)
+        clamp.set_child(content)
+        scrolled.set_child(clamp)
 
-        self.invert_terminal_theme = False
-        self.invert_log_button = Gtk.Button(label="🌗 Invert Colors")
-        self.invert_log_button.set_tooltip_text("Switch terminal between White-on-Black and Black-on-White (auto-adapts to Adwaita Light/Dark by default).")
+        # UEFI & MOK Status
+        sb_group = Adw.PreferencesGroup(
+            title="UEFI Secure Boot & MOK Status",
+            description="Machine Owner Keys (MOK) allow your custom-compiled kernel and DKMS drivers to boot with Secure Boot enabled."
+        )
+
+        sb_fw_row = Adw.ActionRow(title="UEFI Secure Boot", subtitle="Hardware firmware enforcement state")
+        self.sb_row_pill = Gtk.Label(label="Checking...")
+        self.sb_row_pill.add_css_class("sb-pill-inactive")
+        self.sb_row_pill.set_valign(Gtk.Align.CENTER)
+        sb_fw_row.add_suffix(self.sb_row_pill)
+        sb_group.add(sb_fw_row)
+
+        mok_row = Adw.ActionRow(title="MOK Signing Key", subtitle="Enrollment status in motherboard UEFI NVRAM")
+        self.mok_enroll_pill = Gtk.Label(label="Checking...")
+        self.mok_enroll_pill.add_css_class("sb-pill-inactive")
+        self.mok_enroll_pill.set_valign(Gtk.Align.CENTER)
+        mok_row.add_suffix(self.mok_enroll_pill)
+        sb_group.add(mok_row)
+
+        default_out = self.kernel_manager.get_output_kernel_dir(is_native=False)
+        self.cert_folder_row = Adw.ActionRow(
+            title="Certificates Directory",
+            subtitle=f"{default_out} (MOK.der, MOK.pem, MOK.priv)"
+        )
+        open_certs_btn = Gtk.Button(label="Open Folder", valign=Gtk.Align.CENTER)
+        open_certs_btn.connect("clicked", self.on_open_certs_folder_clicked)
+        self.cert_folder_row.add_suffix(open_certs_btn)
+        sb_group.add(self.cert_folder_row)
+
+        content.append(sb_group)
+
+        # MOK Key Management
+        mgmt_group = Adw.PreferencesGroup(title="MOK Key Management")
+
+        sign_row = Adw.ActionRow(
+            title="Sign & Enroll Installed Kernel",
+            subtitle="Sign /boot/vmlinuz and out-of-tree DKMS modules, and queue MOK enrollment if needed"
+        )
+        self.sign_installed_action_button = Gtk.Button(label="Sign & Enroll", valign=Gtk.Align.CENTER)
+        self.sign_installed_action_button.add_css_class("suggested-action")
+        self.sign_installed_action_button.add_css_class("pill")
+        self.sign_installed_action_button.connect("clicked", self.on_sign_installed_kernel_clicked)
+        sign_row.add_suffix(self.sign_installed_action_button)
+        mgmt_group.add(sign_row)
+
+        reset_row = Adw.ActionRow(
+            title="Reset & Recreate MOK Keys",
+            subtitle="Revoke old UEFI enrollment, generate fresh RSA-2048 keys, and re-sign the installed kernel"
+        )
+        self.reset_mok_button = Gtk.Button(label="Reset Keys", valign=Gtk.Align.CENTER)
+        self.reset_mok_button.add_css_class("destructive-action")
+        self.reset_mok_button.add_css_class("pill")
+        self.reset_mok_button.connect("clicked", self.on_reset_mok_clicked)
+        reset_row.add_suffix(self.reset_mok_button)
+        mgmt_group.add(reset_row)
+
+        content.append(mgmt_group)
+        return scrolled
+
+    def _build_kernels_logs_page(self) -> Gtk.Widget:
+        scrolled = Gtk.ScrolledWindow()
+        scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+
+        clamp = Adw.Clamp(maximum_size=760, tightening_threshold=560)
+        clamp.set_margin_top(20)
+        clamp.set_margin_bottom(24)
+        clamp.set_margin_start(16)
+        clamp.set_margin_end(16)
+
+        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=20)
+        clamp.set_child(content)
+        scrolled.set_child(clamp)
+
+        # Installed Kernels Group
+        self.kernels_group = Adw.PreferencesGroup(
+            title="Installed Kernels",
+            description="Inspect installed Linux kernel packages or remove an older kernel to reclaim /boot space."
+        )
+        self.rollback_button = Gtk.Button(label="Rollback Kernel...", valign=Gtk.Align.CENTER)
+        self.rollback_button.add_css_class("destructive-action")
+        self.rollback_button.connect("clicked", self.on_rollback_clicked)
+        self.kernels_group.set_header_suffix(self.rollback_button)
+
+        placeholder_row = Adw.ActionRow(title="Scanning installed kernel packages...")
+        self._installed_kernel_rows.append(placeholder_row)
+        self.kernels_group.add(placeholder_row)
+        content.append(self.kernels_group)
+
+        # Build & Installation Log Group
+        log_group = Adw.PreferencesGroup(title="Build & Installation Log")
+        log_actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6, valign=Gtk.Align.CENTER)
+
+        self.invert_log_button = Gtk.Button(icon_name="weather-clear-night-symbolic")
+        self.invert_log_button.add_css_class("flat")
+        self.invert_log_button.set_tooltip_text("Toggle Light / Dark Log Contrast")
         self.invert_log_button.connect("clicked", self.on_invert_log_clicked)
-        log_toolbar.append(self.invert_log_button)
+        log_actions.append(self.invert_log_button)
 
-        self.copy_log_button = Gtk.Button(label="📋 Copy Error Log")
-        self.copy_log_button.set_tooltip_text("Copy build errors and recent terminal output to system clipboard.")
+        self.copy_log_button = Gtk.Button(icon_name="edit-copy-symbolic")
+        self.copy_log_button.add_css_class("flat")
+        self.copy_log_button.set_tooltip_text("Copy Build / Error Log")
         self.copy_log_button.connect("clicked", self.on_copy_log_clicked)
-        log_toolbar.append(self.copy_log_button)
+        log_actions.append(self.copy_log_button)
 
-        self.clear_log_button = Gtk.Button(label="Clear Log")
-        self.clear_log_button.set_tooltip_text("Clear current log buffer.")
+        self.clear_log_button = Gtk.Button(icon_name="edit-clear-all-symbolic")
+        self.clear_log_button.add_css_class("flat")
+        self.clear_log_button.set_tooltip_text("Clear Log")
         self.clear_log_button.connect("clicked", self.on_clear_log_clicked)
-        log_toolbar.append(self.clear_log_button)
+        log_actions.append(self.clear_log_button)
 
-        log_expander_box.append(log_toolbar)
-
-        # Scrolled terminal view
-        self.terminal_view = Gtk.TextView()
-        self.terminal_view.set_editable(False)
-        self.terminal_view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
-        self.terminal_view.set_monospace(True)
-        self.terminal_view.set_left_margin(12)
-        self.terminal_view.set_right_margin(12)
-        self.terminal_view.set_top_margin(10)
-        self.terminal_view.set_bottom_margin(10)
-        self.terminal_view.add_css_class("terminal-view")
+        log_group.set_header_suffix(log_actions)
 
         self.terminal_scroller = Gtk.ScrolledWindow()
-        self.terminal_scroller.set_child(self.terminal_view)
-        self.terminal_scroller.set_min_content_height(260)
+        self.terminal_scroller.set_min_content_height(300)
         self.terminal_scroller.set_vexpand(True)
         self.terminal_scroller.add_css_class("terminal-container")
-        log_expander_box.append(self.terminal_scroller)
 
-        # Configure adaptive Light/Dark theme tag & Adw.StyleManager listener for terminal view
+        self.terminal_view = Gtk.TextView()
+        self.terminal_view.set_editable(False)
+        self.terminal_view.set_monospace(True)
+        self.terminal_view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+        self.terminal_view.set_top_margin(10)
+        self.terminal_view.set_bottom_margin(10)
+        self.terminal_view.set_left_margin(12)
+        self.terminal_view.set_right_margin(12)
+        self.terminal_view.add_css_class("terminal-view")
+
         buf = self.terminal_view.get_buffer()
-        self.terminal_theme_tag = buf.create_tag("terminal_theme")
-        self.style_manager = Adw.StyleManager.get_default()
-        if self.style_manager:
-            self.style_manager.connect("notify::dark", self._on_theme_changed)
-        settings = Gtk.Settings.get_default()
-        if settings:
-            settings.connect("notify::gtk-application-prefer-dark-theme", self._on_theme_changed)
-            settings.connect("notify::gtk-theme-name", self._on_theme_changed)
-        self._update_terminal_theme()
+        self.terminal_theme_tag = buf.create_tag("theme_text", foreground="#ffffff", background="#000000")
 
-        self.log_expander.set_child(log_expander_box)
-        self.content_box.append(self.log_expander)
+        self.terminal_scroller.set_child(self.terminal_view)
+        log_group.add(self.terminal_scroller)
+        content.append(log_group)
 
-        # Startup initialization
-        self.kernel_manager.cleanup_cache_on_startup(progress_callback=self.log)
-        sb_status = "ENABLED (MOK signing recommended)" if self.is_secure_boot else "DISABLED / INACTIVE"
-        self.log(f"[i] Host UEFI Secure Boot: {sb_status}")
+        return scrolled
 
-        # Check build dependencies on startup
-        use_container = (self.build_mode_row.get_selected() == 1)
-        missing_deps = self.kernel_manager.check_build_dependencies(use_container=use_container)
+    def _schedule_startup_checks(self):
+        """Runs initial host/cache/dependency/network checks in a background thread so UI paints immediately."""
+        self.log(f"[*] CachyOS Kernel Updater v{APP_VERSION} initialized ({self.kernel_manager.host_distro.get('name', 'Debian/Ubuntu')}).")
+
+        def worker():
+            sb_status = self.kernel_manager.get_mok_status(self.get_current_output_dir())
+            cleaned = self.kernel_manager.cleanup_cache_on_startup(progress_callback=self.log)
+            missing_deps = self.kernel_manager.check_build_dependencies(use_container=False)
+            installed_kernels = self.kernel_manager.get_installed_kernels()
+            releases = self.kernel_manager.get_available_versions()
+            latest = self.kernel_manager.get_latest_cachy_version()
+            is_matching = self.kernel_manager.is_matching_running_kernel()
+            GLib.idle_add(
+                self._apply_startup_results,
+                sb_status, cleaned, missing_deps, installed_kernels, releases, latest, is_matching
+            )
+
+        threading.Thread(target=worker, daemon=True).start()
+        return False
+
+    def _apply_startup_results(self, sb_status, cleaned, missing_deps, installed_kernels, releases, latest, is_matching):
+        self._apply_mok_status_to_ui(sb_status)
+
+        if cleaned:
+            self.log(f"[*] Cleaned up {cleaned} stale build cache item(s) on startup.")
+
+        self.deps_banner.set_revealed(bool(missing_deps))
         if missing_deps:
-            self.log(f"[!] Notice: Missing {len(missing_deps)} build dependency item(s): {', '.join(missing_deps)}. Click 'Install Dependencies' to install.")
+            self.log(f"[!] Missing {len(missing_deps)} host dependency item(s): {', '.join(missing_deps)}")
         else:
-            mode = "Container & build" if use_container else "Host compiler"
-            self.log(f"[✓] {mode} dependencies are verified and installed.")
+            self.log("[✓] Host compiler dependencies verified.")
 
-        # Automatically check for available CachyOS releases on startup
-        self.on_check_updates_clicked(None)
+        self._populate_installed_kernels_list(installed_kernels)
+        self._update_version_ui(releases, latest, is_matching)
+        return False
 
-    def on_about_clicked(self, button):
-        """Displays modern Libadwaita About dialog with the application logo and version."""
+    def _populate_installed_kernels_list(self, installed_kernels):
+        for row in self._installed_kernel_rows:
+            self.kernels_group.remove(row)
+        self._installed_kernel_rows.clear()
+
+        current_kver = self.kernel_manager.get_current_kernel_version()
+        if not installed_kernels:
+            empty_row = Adw.ActionRow(title="No linux-image packages detected")
+            self._installed_kernel_rows.append(empty_row)
+            self.kernels_group.add(empty_row)
+            return
+
+        for pkg in installed_kernels:
+            is_running = current_kver in pkg
+            row = Adw.ActionRow(
+                title=pkg,
+                subtitle="Currently running kernel" if is_running else "Installed kernel package"
+            )
+            if is_running:
+                pill = Gtk.Label(label="Running", valign=Gtk.Align.CENTER)
+                pill.add_css_class("sb-pill-active")
+                row.add_suffix(pill)
+            else:
+                rm_btn = Gtk.Button(icon_name="user-trash-symbolic", valign=Gtk.Align.CENTER)
+                rm_btn.add_css_class("flat")
+                rm_btn.set_tooltip_text(f"Remove {pkg}")
+                rm_btn.connect("clicked", lambda _b, p=pkg: self._confirm_remove_single_kernel(p))
+                row.add_suffix(rm_btn)
+            self._installed_kernel_rows.append(row)
+            self.kernels_group.add(row)
+
+    def _confirm_remove_single_kernel(self, package_name: str):
+        dialog = Adw.MessageDialog(
+            transient_for=self,
+            heading="Remove Kernel Package",
+            body=f"Purge {package_name} from your system and update GRUB/initramfs?"
+        )
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("remove", "Remove")
+        dialog.set_response_appearance("remove", Adw.ResponseAppearance.DESTRUCTIVE)
+
+        def on_resp(_dlg, resp):
+            if resp == "remove":
+                self.log(f"[*] Requesting root authentication to purge {package_name}...")
+                def remove_task():
+                    success = self.kernel_manager.remove_kernel(package_name, progress_callback=self.log)
+                    if success:
+                        updated = self.kernel_manager.get_installed_kernels()
+                        GLib.idle_add(self._populate_installed_kernels_list, updated)
+                threading.Thread(target=remove_task, daemon=True).start()
+
+        dialog.connect("response", on_resp)
+        dialog.present()
+
+    def on_about_clicked(self, action=None, param=None):
+        """Shows a standard Libadwaita About dialog."""
         use_dialog = hasattr(Adw, "AboutDialog")
         about = Adw.AboutDialog() if use_dialog else Adw.AboutWindow(transient_for=self)
-        about.set_application_name("Kernel Updater for CachyOS on Debian")
+        about.set_application_name("CachyOS Kernel Updater")
         about.set_application_icon("io.github.Antux912012.debian-cachy-os-kernel-updater")
         about.set_version(APP_VERSION)
         about.set_developer_name("Antonio")
-        about.set_comments("Modern GTK4/Adwaita tool to compile, install, optimize, and sign CachyOS kernels on Debian systems.")
+        about.set_comments("Compile, optimize, install, and UEFI Secure Boot sign CachyOS kernels on Debian & Ubuntu.")
         about.set_website("https://github.com/Antux912012/debian-cachy-os-kernel-updater")
         about.set_license_type(Gtk.License.GPL_3_0)
         if use_dialog:
@@ -602,27 +603,9 @@ class KernelUpdaterWindow(Adw.ApplicationWindow):
             about.present()
 
     def _apply_custom_css(self):
-        """Loads clean, modern Adwaita-styled CSS for status badges, branding colors, and terminal log view."""
+        """Loads clean Adwaita-styled CSS for status pills and adaptive terminal log view."""
         provider = Gtk.CssProvider()
         css = b"""
-            /* Brand Title & Headings */
-            .brand-title {
-                color: #00A896;
-                font-weight: 800;
-            }
-            .status-card {
-                border-left: 4px solid #00A896;
-                background-color: rgba(0, 168, 150, 0.05);
-            }
-            .version-badge {
-                background-color: rgba(0, 168, 150, 0.15);
-                color: #00A896;
-                font-weight: bold;
-                font-size: 8pt;
-                padding: 2px 8px;
-                border-radius: 10px;
-                border: 1px solid rgba(0, 168, 150, 0.4);
-            }
             .sb-pill-active {
                 background-color: #00A896;
                 color: #ffffff;
@@ -630,7 +613,6 @@ class KernelUpdaterWindow(Adw.ApplicationWindow):
                 font-size: 8.5pt;
                 padding: 4px 10px;
                 border-radius: 12px;
-                border: 1px solid rgba(255, 255, 255, 0.2);
             }
             .sb-pill-inactive {
                 background-color: #5e5c64;
@@ -640,50 +622,8 @@ class KernelUpdaterWindow(Adw.ApplicationWindow):
                 padding: 4px 10px;
                 border-radius: 12px;
             }
-            .stage-label {
-                font-weight: bold;
-                font-size: 11pt;
-                color: #00A896;
-            }
-            /* Suggested action button (Teal Brand Gradient) */
-            button.suggested-action {
-                background: linear-gradient(135deg, #00A896 0%, #028090 100%);
-                color: #ffffff;
-                font-weight: bold;
-                border: none;
-                border-radius: 8px;
-                box-shadow: 0 2px 4px rgba(0, 168, 150, 0.25);
-            }
-            button.suggested-action:hover {
-                background: linear-gradient(135deg, #02bda8 0%, #0393a5 100%);
-                box-shadow: 0 4px 8px rgba(0, 168, 150, 0.35);
-            }
-            button.suggested-action:active {
-                background: linear-gradient(135deg, #017569 0%, #015e6a 100%);
-            }
-            /* Destructive action button (Crimson Brand Gradient) */
-            button.destructive-action {
-                background: linear-gradient(135deg, #D82655 0%, #C01C46 100%);
-                color: #ffffff;
-                font-weight: bold;
-                border: none;
-                border-radius: 8px;
-            }
-            button.destructive-action:hover {
-                background: linear-gradient(135deg, #e83765 0%, #d82655 100%);
-            }
-            /* Progress Bar with Teal to Crimson Gradient */
-            progressbar > trough > progress {
-                background: linear-gradient(90deg, #00A896 0%, #028090 55%, #D82655 100%);
-                border-radius: 6px;
-            }
-            progressbar > trough {
-                background-color: rgba(0, 168, 150, 0.15);
-                border-radius: 6px;
-            }
-            /* Modern Adaptive Terminal View (Light & Dark Adwaita Theme Support) */
             .terminal-container {
-                border-radius: 8px;
+                border-radius: 10px;
                 border: 1px solid rgba(0, 168, 150, 0.45);
             }
             scrolledwindow.terminal-container.terminal-dark,
@@ -691,10 +631,10 @@ class KernelUpdaterWindow(Adw.ApplicationWindow):
             textview.terminal-view.terminal-dark text {
                 font-family: monospace;
                 font-size: 9.5pt;
-                background-color: #000000;
+                background-color: #0d1117;
                 background-image: none;
-                color: #ffffff;
-                caret-color: #ffffff;
+                color: #e6edf3;
+                caret-color: #e6edf3;
             }
             scrolledwindow.terminal-container.terminal-light,
             textview.terminal-view.terminal-light,
@@ -703,8 +643,8 @@ class KernelUpdaterWindow(Adw.ApplicationWindow):
                 font-size: 9.5pt;
                 background-color: #ffffff;
                 background-image: none;
-                color: #000000;
-                caret-color: #000000;
+                color: #1f2328;
+                caret-color: #1f2328;
             }
         """
         provider.load_from_data(css)
@@ -713,7 +653,6 @@ class KernelUpdaterWindow(Adw.ApplicationWindow):
             Gtk.StyleContext.add_provider_for_display(display, provider, Gtk.STYLE_PROVIDER_PRIORITY_USER)
 
     def _is_dark_theme_active(self) -> bool:
-        """Detects whether Adwaita / GTK is currently using a dark color scheme."""
         is_dark = False
         if hasattr(self, "style_manager") and self.style_manager:
             is_dark = bool(self.style_manager.get_dark())
@@ -728,16 +667,13 @@ class KernelUpdaterWindow(Adw.ApplicationWindow):
         return is_dark
 
     def _on_theme_changed(self, *args):
-        """Callback when Adwaita Light/Dark mode changes."""
         self._update_terminal_theme()
 
     def on_invert_log_clicked(self, button):
-        """Allows toggling White-on-Black vs Black-on-White manually in addition to auto Adwaita theme adaptation."""
         self.invert_terminal_theme = not getattr(self, "invert_terminal_theme", False)
         self._update_terminal_theme()
 
     def _update_terminal_theme(self):
-        """Applies high-contrast White-on-Black (Dark mode) or Black-on-White (Light mode) to the build log terminal."""
         use_dark_terminal = self._is_dark_theme_active()
         for widget in (getattr(self, "terminal_view", None), getattr(self, "terminal_scroller", None)):
             if widget is None:
@@ -751,18 +687,17 @@ class KernelUpdaterWindow(Adw.ApplicationWindow):
 
         if hasattr(self, "terminal_theme_tag") and self.terminal_theme_tag:
             if use_dark_terminal:
-                self.terminal_theme_tag.set_property("foreground", "#ffffff")
-                self.terminal_theme_tag.set_property("background", "#000000")
-                self.terminal_theme_tag.set_property("paragraph-background", "#000000")
+                self.terminal_theme_tag.set_property("foreground", "#e6edf3")
+                self.terminal_theme_tag.set_property("background", "#0d1117")
+                self.terminal_theme_tag.set_property("paragraph-background", "#0d1117")
             else:
-                self.terminal_theme_tag.set_property("foreground", "#000000")
+                self.terminal_theme_tag.set_property("foreground", "#1f2328")
                 self.terminal_theme_tag.set_property("background", "#ffffff")
                 self.terminal_theme_tag.set_property("paragraph-background", "#ffffff")
             buf = self.terminal_view.get_buffer()
             buf.apply_tag(self.terminal_theme_tag, buf.get_start_iter(), buf.get_end_iter())
 
     def log(self, message):
-        """Thread-safe logging to the textview terminal."""
         GLib.idle_add(self._log_idle, message)
 
     def _log_idle(self, message):
@@ -777,14 +712,12 @@ class KernelUpdaterWindow(Adw.ApplicationWindow):
         return False
 
     def update_stage_progress(self, stage: int, total_stages: int, description: str):
-        """Updates the high-level step progress bar and stage label."""
         fraction = min(1.0, max(0.0, stage / total_stages))
         self.stage_progress_bar.set_fraction(fraction)
         self.stage_status_label.set_label(f"Stage {stage}/{total_stages}: {description}")
         return False
 
     def get_current_output_dir(self):
-        """Returns the current output directory where packages and MOK certificates are saved."""
         sel_idx = self.kernel_version_row.get_selected()
         ver = None
         if self.versions_list and 0 <= sel_idx < len(self.versions_list):
@@ -793,7 +726,6 @@ class KernelUpdaterWindow(Adw.ApplicationWindow):
         return self.kernel_manager.last_output_dir or self.kernel_manager.get_output_kernel_dir(is_native=is_native, version=ver)
 
     def update_output_path_display(self):
-        """Updates output package directory and certificate path displays."""
         target_dir = self.get_current_output_dir()
         if hasattr(self, "output_row"):
             self.output_row.set_subtitle(target_dir)
@@ -801,7 +733,6 @@ class KernelUpdaterWindow(Adw.ApplicationWindow):
             self.cert_folder_row.set_subtitle(f"{target_dir} (MOK.der, MOK.pem, MOK.priv)")
 
     def _open_folder_in_file_manager(self, target_dir: str, label: str = "output folder"):
-        """Creates target_dir if missing and opens it in the user's file manager."""
         try:
             os.makedirs(target_dir, exist_ok=True)
         except Exception:
@@ -816,13 +747,12 @@ class KernelUpdaterWindow(Adw.ApplicationWindow):
                 self.log(f"[!] Could not open folder: {e}")
 
     def _set_action_buttons_sensitive(self, sensitive: bool, include_aux: bool = False):
-        """Enables or disables primary action buttons during background operations."""
-        for attr in ("start_build_button", "install_existing_button", "sign_installed_action_button", "reset_mok_button", "reset_mok_row_button"):
+        for attr in ("start_build_button", "install_existing_button", "sign_installed_action_button", "reset_mok_button"):
             btn = getattr(self, attr, None)
             if btn is not None:
                 btn.set_sensitive(sensitive)
         if include_aux:
-            for attr in ("deps_button", "check_button", "rollback_button"):
+            for attr in ("check_button", "rollback_button"):
                 btn = getattr(self, attr, None)
                 if btn is not None:
                     btn.set_sensitive(sensitive)
@@ -830,23 +760,36 @@ class KernelUpdaterWindow(Adw.ApplicationWindow):
     def on_open_certs_folder_clicked(self, button=None):
         self._open_folder_in_file_manager(self.get_current_output_dir(), "certificates & output folder")
 
-    def refresh_secure_boot_ui(self):
-        """Refreshes live Secure Boot pills and certificate status."""
+    def _apply_mok_status_to_ui(self, status: dict):
         target_dir = self.get_current_output_dir()
-        status = self.kernel_manager.get_mok_status(target_dir)
         self.is_secure_boot = status.get("secure_boot_enabled", False)
+        enrolled = status.get("key_enrolled", False)
 
-        pill_text = "[Secure Boot: Active]" if self.is_secure_boot else "[Secure Boot: Off]"
+        pill_text = "Secure Boot: Active" if self.is_secure_boot else "Secure Boot: Off"
         pill_class = "sb-pill-active" if self.is_secure_boot else "sb-pill-inactive"
 
-        if hasattr(self, "sb_banner_pill"):
-            self.sb_banner_pill.set_label(pill_text)
-            self.sb_banner_pill.set_css_classes([pill_class])
-        if hasattr(self, "sb_row_pill"):
-            self.sb_row_pill.set_label(pill_text)
-            self.sb_row_pill.set_css_classes([pill_class])
-        if hasattr(self, "cert_folder_row"):
-            self.cert_folder_row.set_subtitle(f"{target_dir} (MOK.der, MOK.pem, MOK.priv)")
+        self.sb_banner_pill.set_label(pill_text)
+        self.sb_banner_pill.set_css_classes([pill_class])
+        self.sb_row_pill.set_label("Active" if self.is_secure_boot else "Off")
+        self.sb_row_pill.set_css_classes([pill_class])
+
+        mok_text = "Enrolled" if enrolled else "Not Enrolled"
+        self.mok_enroll_pill.set_label(mok_text)
+        self.mok_enroll_pill.set_css_classes(["sb-pill-active" if enrolled else "sb-pill-inactive"])
+
+        if self.is_secure_boot:
+            self.sb_summary_row.set_subtitle("UEFI Secure Boot enforced • " + ("MOK enrolled" if enrolled else "MOK enrollment needed"))
+        else:
+            self.sb_summary_row.set_subtitle("UEFI Secure Boot disabled in firmware")
+
+        self.cert_folder_row.set_subtitle(f"{target_dir} (MOK.der, MOK.pem, MOK.priv)")
+
+    def refresh_secure_boot_ui(self):
+        target_dir = self.get_current_output_dir()
+        def worker():
+            status = self.kernel_manager.get_mok_status(target_dir)
+            GLib.idle_add(self._apply_mok_status_to_ui, status)
+        threading.Thread(target=worker, daemon=True).start()
 
     def on_version_selected(self, row, param):
         self.update_output_path_display()
@@ -859,35 +802,37 @@ class KernelUpdaterWindow(Adw.ApplicationWindow):
         engine = self.kernel_manager.get_container_engine()
         if use_container:
             if engine:
-                self.build_mode_row.set_subtitle(f"Detected engine: {engine.capitalize()} (Debian Bookworm isolated environment)")
+                self.build_mode_row.set_subtitle(f"Detected engine: {engine.capitalize()} (isolated Debian builder)")
             else:
-                self.build_mode_row.set_subtitle("Podman will be installed as a dependency (Debian Bookworm isolated environment)")
+                self.build_mode_row.set_subtitle("Podman will be installed as a dependency (isolated Debian builder)")
             self.hw_config_check.set_active(False)
             self.hw_config_check.set_sensitive(False)
             self.hw_config_row.set_sensitive(False)
-            self.hw_config_row.set_subtitle("Disabled in Container Mode: Container compilation builds for all hardware.")
-            self.log("[i] Container build selected: compiling for all hardware inside an isolated builder image.")
+            self.hw_config_row.set_subtitle("Disabled in Container Mode: container builds universal hardware drivers.")
         else:
-            self.build_mode_row.set_subtitle("Native Host Build (Recommended — Fastest) compiles directly on host")
+            self.build_mode_row.set_subtitle("Native host build is fastest; container isolates build dependencies")
             self.hw_config_check.set_sensitive(True)
             self.hw_config_check.set_active(True)
             self.hw_config_row.set_sensitive(True)
-            self.hw_config_row.set_subtitle("Tailors drivers to machine while preserving Wi-Fi, Bluetooth, storage &amp; filesystem baselines.")
-            self.log("[i] Native Host Build selected: compiling directly on host.")
+            self.hw_config_row.set_subtitle("Uses localmodconfig while preserving Wi-Fi, Bluetooth, NVMe & filesystem baselines")
 
-        # Re-check dependencies dynamically for the newly selected environment
-        missing = self.kernel_manager.check_build_dependencies(use_container=use_container)
-        if missing:
-            self.log(f"[!] Notice: Missing {len(missing)} dependency item(s): {', '.join(missing)}. Click 'Install Dependencies' to install.")
-        else:
-            mode = "Container & build" if use_container else "Host compiler"
-            self.log(f"[✓] {mode} dependencies are verified and installed.")
+        def dep_worker():
+            missing = self.kernel_manager.check_build_dependencies(use_container=use_container)
+            def _update():
+                self.deps_banner.set_revealed(bool(missing))
+                if missing:
+                    self.log(f"[!] Missing {len(missing)} dependency item(s): {', '.join(missing)}.")
+                else:
+                    mode = "Container & build" if use_container else "Host compiler"
+                    self.log(f"[✓] {mode} dependencies verified.")
+                return False
+            GLib.idle_add(_update)
+        threading.Thread(target=dep_worker, daemon=True).start()
 
     def on_check_updates_clicked(self, button):
         self.log("[*] Checking official CachyOS GitHub repositories for available releases...")
-        if hasattr(self, "check_button"):
-            self.check_button.set_sensitive(False)
-        self.latest_label.set_label("Latest CachyOS Kernel: Querying GitHub...")
+        self.check_button.set_sensitive(False)
+        self.latest_row.set_subtitle("Querying GitHub...")
 
         def check_task():
             releases = self.kernel_manager.get_available_versions()
@@ -898,7 +843,7 @@ class KernelUpdaterWindow(Adw.ApplicationWindow):
         threading.Thread(target=check_task, daemon=True).start()
 
     def _update_version_ui(self, releases, latest, is_matching):
-        self.latest_label.set_label(f"Latest CachyOS Kernel: {latest}")
+        self.latest_row.set_subtitle(f"CachyOS {latest}")
         self.log(f"[✓] Official latest CachyOS kernel version: {latest}")
 
         self.versions_list = releases
@@ -906,7 +851,6 @@ class KernelUpdaterWindow(Adw.ApplicationWindow):
         self.version_string_list = Gtk.StringList.new(labels)
         self.kernel_version_row.set_model(self.version_string_list)
 
-        # Pre-select latest Stable release
         stable_idx = 0
         for idx, r in enumerate(releases):
             if not r['is_experimental']:
@@ -916,18 +860,16 @@ class KernelUpdaterWindow(Adw.ApplicationWindow):
         self.update_output_path_display()
 
         if is_matching:
-            self.match_status_label.set_label("✅ You are currently running the latest CachyOS kernel.")
+            self.match_status_pill.set_label("Up to date")
+            self.match_status_pill.set_css_classes(["sb-pill-active"])
             self.log("[i] Running kernel matches the latest CachyOS release.")
         else:
-            self.match_status_label.set_label("⚡ A newer or different CachyOS kernel version is available for compilation.")
+            self.match_status_pill.set_label("Update available")
+            self.match_status_pill.set_css_classes(["sb-pill-inactive"])
             self.log("[i] Newer CachyOS release is ready to download and compile.")
 
-        if hasattr(self, "check_button"):
-            self.check_button.set_sensitive(True)
-        if hasattr(self, "start_build_button"):
-            self.start_build_button.set_sensitive(True)
-        if hasattr(self, "deps_button"):
-            self.deps_button.set_sensitive(True)
+        self.check_button.set_sensitive(True)
+        self.start_build_button.set_sensitive(True)
         return False
 
     def on_open_output_clicked(self, button):
@@ -943,18 +885,6 @@ class KernelUpdaterWindow(Adw.ApplicationWindow):
         use_container = (self.build_mode_row.get_selected() == 1)
         missing = self.kernel_manager.check_build_dependencies(use_container=use_container)
         if not missing:
-            self.log("\n=======================================================")
-            if use_container:
-                self.log("[✓] All required kernel build dependencies and container environment are already installed:")
-                engine = self.kernel_manager.get_container_engine() or "podman"
-                self.log(f"    • Container Engine: {engine}")
-                self.log(f"    • Container Image: {self.kernel_manager.container_image_tag} (verified)")
-            else:
-                self.log("[✓] All required host kernel compiler dependencies are already installed:")
-            for dep in self.kernel_manager.REQUIRED_BUILD_DEPS:
-                self.log(f"    • {dep} (installed)")
-            self.log("=======================================================\n")
-
             dialog = Adw.MessageDialog(
                 transient_for=self,
                 heading="Dependencies Installed",
@@ -967,18 +897,9 @@ class KernelUpdaterWindow(Adw.ApplicationWindow):
             dialog.add_response("cancel", "Keep Current")
             dialog.add_response("reinstall", "Update / Reinstall")
             dialog.set_response_appearance("reinstall", Adw.ResponseAppearance.SUGGESTED)
-
-            def on_dialog_response(dlg, response):
-                if response == "reinstall":
-                    self._start_deps_install(use_container=use_container, force_rebuild=True)
-
-            dialog.connect("response", on_dialog_response)
+            dialog.connect("response", lambda _d, r: self._start_deps_install(use_container=use_container, force_rebuild=True) if r == "reinstall" else None)
             dialog.present()
         else:
-            self.log("\n=======================================================")
-            mode_desc = "Container & Build" if use_container else "Host Compiler"
-            self.log(f"[*] Missing {len(missing)} {mode_desc} dependency item(s): {', '.join(missing)}")
-            self.log("=======================================================\n")
             self._start_deps_install(use_container=use_container, force_rebuild=False)
 
     def _start_deps_install(self, use_container=False, force_rebuild=False, and_build=False):
@@ -990,13 +911,14 @@ class KernelUpdaterWindow(Adw.ApplicationWindow):
                 use_container=use_container,
                 force_rebuild=force_rebuild
             )
-            GLib.idle_add(self._on_deps_complete, success, and_build)
+            GLib.idle_add(self._on_deps_complete, success, and_build, use_container)
 
         threading.Thread(target=deps_task, daemon=True).start()
 
-    def _on_deps_complete(self, success, and_build=False):
+    def _on_deps_complete(self, success, and_build=False, use_container=False):
         self._set_action_buttons_sensitive(True, include_aux=True)
         if success:
+            self.deps_banner.set_revealed(False)
             self.log("[✓] Build dependencies setup complete.")
             if and_build:
                 self._confirm_and_start_build()
@@ -1006,30 +928,21 @@ class KernelUpdaterWindow(Adw.ApplicationWindow):
 
     def on_start_build_clicked(self, button):
         use_container = (self.build_mode_row.get_selected() == 1)
-
-        # Check dependencies before build
         missing = self.kernel_manager.check_build_dependencies(use_container=use_container)
         if missing:
-            mode_desc = "container environment" if use_container else "host compiler"
-            self.log(f"[!] Cannot start build: missing {len(missing)} {mode_desc} package(s): {', '.join(missing)}")
             dialog = Adw.MessageDialog(
                 transient_for=self,
                 heading="Dependencies Required",
                 body=(
-                    f"Your system is missing required compilation packages:\n"
+                    f"Missing required compilation packages:\n"
                     f"{', '.join(missing)}\n\n"
-                    f"Would you like to install them now using pkexec apt-get?"
+                    f"Install them now via pkexec apt-get?"
                 )
             )
             dialog.add_response("cancel", "Cancel")
             dialog.add_response("install", "Install Dependencies")
             dialog.set_response_appearance("install", Adw.ResponseAppearance.SUGGESTED)
-
-            def on_missing_resp(dlg, resp):
-                if resp == "install":
-                    self._start_deps_install(use_container=use_container, force_rebuild=False, and_build=True)
-
-            dialog.connect("response", on_missing_resp)
+            dialog.connect("response", lambda _d, r: self._start_deps_install(use_container=use_container, force_rebuild=False, and_build=True) if r == "install" else None)
             dialog.present()
             return
 
@@ -1064,8 +977,8 @@ class KernelUpdaterWindow(Adw.ApplicationWindow):
 
         output_dir = self.kernel_manager.get_output_kernel_dir(is_native=(cpu_arch == 'native'), version=ver)
         mode_str = f"Container ({self.kernel_manager.get_container_engine() or 'Podman'})" if use_container else "Native Host System"
-        opt_str = "Native (-march=native)" if cpu_arch == 'native' else ("Generic x86-64-v3" if cpu_arch == 'x86-64-v3' else "Generic x86-64 (Safe for all modern CPUs)")
-        hw_str = "All Hardware (Universal Generic Drivers — Container Mode)" if use_container else ("Current System Hardware (localmodconfig)" if use_localmodconfig else "All Hardware (Universal Generic Drivers)")
+        opt_str = "Native (-march=native)" if cpu_arch == 'native' else ("Generic x86-64-v3" if cpu_arch == 'x86-64-v3' else "Generic x86-64")
+        hw_str = "Universal Drivers (Container)" if use_container else ("Current Hardware (localmodconfig)" if use_localmodconfig else "Universal Drivers")
 
         dialog = Adw.MessageDialog(
             transient_for=self,
@@ -1073,20 +986,18 @@ class KernelUpdaterWindow(Adw.ApplicationWindow):
             body=(
                 f"Kernel Version: {ver}\n"
                 f"Build Environment: {mode_str}\n"
-                f"Hardware Drivers: {hw_str}\n"
+                f"Drivers: {hw_str}\n"
                 f"CPU Architecture: {opt_str}\n"
-                f"CPU Scheduler: {cpu_scheduler.upper()} | Tick Rate: {tick_rate} Hz\n"
-                f"Parallel Threads: {threads} (1 core kept free)\n\n"
-                f"Output Package Folder:\n📂 {output_dir}\n\n"
-                f"Auto-Install after build: {'Yes (pkexec dpkg -i)' if auto_install else 'No'}\n"
-                f"UEFI Secure Boot signing: {'Yes (MOK)' if sign_after_install else 'No'}"
+                f"Scheduler: {cpu_scheduler.upper()} | Tick Rate: {tick_rate} Hz | Threads: {threads}\n\n"
+                f"Output Directory:\n{output_dir}\n\n"
+                f"Auto-Install: {'Yes' if auto_install else 'No'} | Secure Boot MOK Sign: {'Yes' if sign_after_install else 'No'}"
             )
         )
         dialog.add_response("cancel", "Cancel")
-        dialog.add_response("proceed", "🚀 Start Build")
+        dialog.add_response("proceed", "Start Build")
         dialog.set_response_appearance("proceed", Adw.ResponseAppearance.SUGGESTED)
 
-        def on_response(dlg, response):
+        def on_response(_dlg, response):
             if response == "proceed":
                 def proceed(mok_password=""):
                     try:
@@ -1094,20 +1005,12 @@ class KernelUpdaterWindow(Adw.ApplicationWindow):
                     except Exception as e:
                         self.log(f"[!] Note on output directory: {e}")
                     self._start_kernel_build(
-                        ver=ver,
-                        tag=tag,
-                        dl_url=dl_url,
-                        use_container=use_container,
-                        use_localmodconfig=use_localmodconfig,
-                        strip_debug_symbols=strip_debug_symbols,
-                        auto_install=auto_install,
-                        sign_after_install=sign_after_install,
-                        cpu_arch=cpu_arch,
-                        compiler_lto=compiler_lto,
-                        cpu_scheduler=cpu_scheduler,
-                        tick_rate=tick_rate,
-                        threads=threads,
-                        mok_password=mok_password
+                        ver=ver, tag=tag, dl_url=dl_url,
+                        use_container=use_container, use_localmodconfig=use_localmodconfig,
+                        strip_debug_symbols=strip_debug_symbols, auto_install=auto_install,
+                        sign_after_install=sign_after_install, cpu_arch=cpu_arch,
+                        compiler_lto=compiler_lto, cpu_scheduler=cpu_scheduler,
+                        tick_rate=tick_rate, threads=threads, mok_password=mok_password
                     )
 
                 if auto_install and sign_after_install:
@@ -1121,21 +1024,9 @@ class KernelUpdaterWindow(Adw.ApplicationWindow):
         dialog.present()
 
     def _start_kernel_build(
-        self,
-        ver,
-        tag,
-        dl_url,
-        use_container,
-        use_localmodconfig,
-        strip_debug_symbols,
-        auto_install,
-        sign_after_install,
-        cpu_arch,
-        compiler_lto,
-        cpu_scheduler,
-        tick_rate,
-        threads,
-        mok_password=""
+        self, ver, tag, dl_url, use_container, use_localmodconfig,
+        strip_debug_symbols, auto_install, sign_after_install, cpu_arch,
+        compiler_lto, cpu_scheduler, tick_rate, threads, mok_password=""
     ):
         total_stages = 5 if auto_install else 4
         self._set_action_buttons_sensitive(False, include_aux=True)
@@ -1145,33 +1036,24 @@ class KernelUpdaterWindow(Adw.ApplicationWindow):
         self.log("[*] Starting CachyOS Kernel Automated Build Pipeline...")
         self.log(f"    • Target Version: {ver} ({tag})")
         self.log(f"    • Build Mode: {'Container' if use_container else 'Native Host'}")
-        self.log(f"    • CPU Architecture: {cpu_arch}")
-        self.log(f"    • Scheduler: {cpu_scheduler} | Concurrency: -j{threads}")
-        self.log(f"    • Auto-Install: {'Enabled' if auto_install else 'Disabled'}")
-        self.log(f"    • Secure Boot Signing: {'Enabled (MOK)' if sign_after_install else 'Disabled'}")
-        self.log(f"    • Output & Certs Directory: {target_output_dir}")
+        self.log(f"    • CPU Architecture: {cpu_arch} | Scheduler: {cpu_scheduler} | -j{threads}")
+        self.log(f"    • Output Directory: {target_output_dir}")
         self.log("=======================================================\n")
 
         self.update_stage_progress(1, total_stages, "Checking dependencies...")
 
         def build_task():
             try:
-                # Stage 1: Verification
-                GLib.idle_add(self.update_stage_progress, 1, total_stages, "Verifying build dependencies and environment...")
+                GLib.idle_add(self.update_stage_progress, 1, total_stages, "Verifying build dependencies...")
                 missing = self.kernel_manager.check_build_dependencies(use_container=use_container)
                 if missing:
                     raise Exception(f"Missing required build dependencies: {', '.join(missing)}")
 
-                # Stage 2: Download & patch CachyOS source
                 GLib.idle_add(self.update_stage_progress, 2, total_stages, f"Downloading & patching CachyOS source ({ver})...")
                 kernel_dir = self.kernel_manager.download_kernel(
-                    version=ver,
-                    tag=tag,
-                    download_url=dl_url,
-                    progress_callback=self.log
+                    version=ver, tag=tag, download_url=dl_url, progress_callback=self.log
                 )
 
-                # Stage 3 & 4: Sanitizing configuration & compiling
                 def stage_cb(stage_num, desc):
                     GLib.idle_add(self.update_stage_progress, stage_num, total_stages, desc)
 
@@ -1190,7 +1072,6 @@ class KernelUpdaterWindow(Adw.ApplicationWindow):
                     threads=threads
                 )
 
-                # Stage 5 (if auto_install): Install & Sign in a single privileged transaction
                 mok_status = "NONE"
                 if auto_install:
                     GLib.idle_add(self.update_stage_progress, 5, total_stages, "Installing .deb packages & signing for Secure Boot...")
@@ -1213,33 +1094,22 @@ class KernelUpdaterWindow(Adw.ApplicationWindow):
     def _on_build_complete(self, success, auto_install=True, sign_after_install=True, mok_status=None, error_msg=None):
         self._set_action_buttons_sensitive(True, include_aux=True)
         self.refresh_secure_boot_ui()
+        self._populate_installed_kernels_list(self.kernel_manager.get_installed_kernels())
 
         if success:
             self.stage_progress_bar.set_fraction(1.0)
             if auto_install:
-                self.stage_status_label.set_label("✓ Build, installation, and Secure Boot signing completed successfully!")
-                self.log("\n=======================================================")
-                self.log("[✓] Pipeline Finished! CachyOS kernel is installed and ready.")
+                self.stage_status_label.set_label("Build, installation, and Secure Boot signing completed.")
                 if sign_after_install:
                     if mok_status == "ENROLLMENT_QUEUED":
-                        self.log("    • Machine Owner Key (MOK) queued for UEFI enrollment on reboot.")
                         self.show_mok_enrolled_reboot_dialog()
                     elif mok_status == "ALREADY_ENROLLED":
-                        self.log("    • Kernel signed with active MOK key; no enrollment needed.")
                         self.show_mok_already_enrolled_dialog()
-                    else:
-                        self.log("    Please reboot your computer to boot the new kernel.")
-                else:
-                    self.log("    Please reboot your computer to boot the new kernel.")
-                self.log("=======================================================\n")
             else:
-                self.stage_status_label.set_label("✓ Build finished! Kernel packages are ready to install.")
-                self.log("\n=======================================================")
-                self.log("[✓] Kernel compilation finished! Click 'Install Existing .deb' to install.")
-                self.log("=======================================================\n")
+                self.stage_status_label.set_label("Build finished. Click 'Install Existing .deb' to install.")
         else:
-            self.stage_status_label.set_label("❌ Build task failed. Click 'Show Detailed Build Log' or 'Copy Error Log'.")
-            self.log_expander.set_expanded(True)
+            self.stage_status_label.set_label("Build failed. Switching to Kernels & Logs for details.")
+            self.view_stack.set_visible_child_name("kernels")
         return False
 
     def on_apply_clicked(self, button):
@@ -1253,10 +1123,8 @@ class KernelUpdaterWindow(Adw.ApplicationWindow):
 
             def install_task():
                 success, mok_status = self.kernel_manager.install_and_sign_kernel_debs(
-                    deb_dir=target_dir,
-                    sign_enabled=sign_after_install,
-                    mok_password=mok_password,
-                    log_callback=self.log
+                    deb_dir=target_dir, sign_enabled=sign_after_install,
+                    mok_password=mok_password, log_callback=self.log
                 )
                 GLib.idle_add(self._on_install_complete, success, mok_status, sign_after_install)
 
@@ -1270,9 +1138,10 @@ class KernelUpdaterWindow(Adw.ApplicationWindow):
     def _on_install_complete(self, success, mok_status, sign_after_install=True):
         self._set_action_buttons_sensitive(True)
         self.refresh_secure_boot_ui()
+        self._populate_installed_kernels_list(self.kernel_manager.get_installed_kernels())
 
         if success:
-            self.log("\n[✓] CachyOS Kernel installed successfully! Please reboot to run the new kernel.")
+            self.log("\n[✓] CachyOS Kernel installed successfully. Please reboot to run the new kernel.")
             if sign_after_install:
                 if mok_status == "ENROLLMENT_QUEUED":
                     self.show_mok_enrolled_reboot_dialog()
@@ -1280,31 +1149,23 @@ class KernelUpdaterWindow(Adw.ApplicationWindow):
                     self.show_mok_already_enrolled_dialog()
                 elif mok_status == "NEEDS_ENROLLMENT":
                     self.log("[!] Notice: MOK key needs enrollment into UEFI NVRAM.")
-            else:
-                self.log("[i] If your system uses UEFI Secure Boot, click '🔒 Sign Installed Kernel (Secure Boot)' to authorize the kernel.")
         else:
             self.log(f"\n[!] Kernel installation failed: {mok_status}\n")
         return False
 
     def on_sign_installed_kernel_clicked(self, button):
         target_dir = self.get_current_output_dir()
+
         def start_signing(mok_password=""):
             current_kernel = self.kernel_manager.get_current_kernel_version()
             self._set_action_buttons_sensitive(False)
-
-            self.log("\n=======================================================")
-            self.log("[*] Starting Post-Installation Kernel & Module Signing (MOK)...")
-            self.log(f"    Target/Running Kernel: {current_kernel}")
-            self.log(f"    Certificates & Output: {target_dir}")
-            self.log("=======================================================\n")
+            self.log(f"\n[*] Starting Post-Installation Kernel & Module Signing for {current_kernel}...")
 
             def sign_task():
                 try:
                     success, mok_status = self.kernel_manager.sign_existing_installed_kernel(
-                        kernel_version="auto",
-                        mok_password=mok_password,
-                        output_dir=target_dir,
-                        log_callback=self.log
+                        kernel_version="auto", mok_password=mok_password,
+                        output_dir=target_dir, log_callback=self.log
                     )
                     GLib.idle_add(self._on_sign_installed_complete, success, mok_status)
                 except Exception as e:
@@ -1320,7 +1181,7 @@ class KernelUpdaterWindow(Adw.ApplicationWindow):
         self.refresh_secure_boot_ui()
 
         if success:
-            self.log(f"[✓] Post-installation signing and initramfs/GRUB update completed successfully! (Status: {mok_status})")
+            self.log(f"[✓] Post-installation signing completed (Status: {mok_status}).")
             if mok_status == "ENROLLMENT_QUEUED":
                 self.show_mok_enrolled_reboot_dialog()
             elif mok_status == "ALREADY_ENROLLED":
@@ -1332,18 +1193,9 @@ class KernelUpdaterWindow(Adw.ApplicationWindow):
         return False
 
     def _present_mok_password_dialog(
-        self,
-        heading: str,
-        body: str,
-        action_id: str,
-        action_label: str,
-        appearance,
-        pwd_prompt: str,
-        confirm_prompt: str,
-        on_confirmed,
-        cancel_msg: str
+        self, heading, body, action_id, action_label, appearance,
+        pwd_prompt, confirm_prompt, on_confirmed, cancel_msg
     ):
-        """Shared builder for 8–16 character MOK password entry and confirmation dialogs."""
         dialog = Adw.MessageDialog(transient_for=self, heading=heading, body=body)
         dialog.add_response("cancel", "Cancel")
         dialog.add_response(action_id, action_label)
@@ -1356,13 +1208,11 @@ class KernelUpdaterWindow(Adw.ApplicationWindow):
 
         pwd_label = Gtk.Label(label=pwd_prompt, halign=Gtk.Align.START)
         pwd_label.add_css_class("caption")
-        pwd_entry = Gtk.PasswordEntry()
-        pwd_entry.set_show_peek_icon(True)
+        pwd_entry = Gtk.PasswordEntry(show_peek_icon=True)
 
         confirm_label = Gtk.Label(label=confirm_prompt, halign=Gtk.Align.START)
         confirm_label.add_css_class("caption")
-        confirm_entry = Gtk.PasswordEntry()
-        confirm_entry.set_show_peek_icon(True)
+        confirm_entry = Gtk.PasswordEntry(show_peek_icon=True)
 
         hint_label = Gtk.Label(label="Password must be between 8 and 16 characters.", halign=Gtk.Align.START)
         hint_label.add_css_class("dim-label")
@@ -1381,14 +1231,14 @@ class KernelUpdaterWindow(Adw.ApplicationWindow):
                 hint_label.set_label("Passwords do not match.")
                 dialog.set_response_enabled(action_id, False)
             else:
-                hint_label.set_label("✓ Password valid and confirmed.")
+                hint_label.set_label("Password valid and confirmed.")
                 dialog.set_response_enabled(action_id, True)
 
         pwd_entry.connect("notify::text", validate_passwords)
         confirm_entry.connect("notify::text", validate_passwords)
         dialog.set_extra_child(box)
 
-        def on_dialog_response(dlg, response):
+        def on_dialog_response(_dlg, response):
             if response == action_id:
                 on_confirmed(pwd_entry.get_text())
             else:
@@ -1398,12 +1248,6 @@ class KernelUpdaterWindow(Adw.ApplicationWindow):
         dialog.present()
 
     def request_mok_password_dialog(self, on_confirmed_callback):
-        """
-        Checks UEFI Secure Boot and MOK enrollment status in the current output folder.
-        If MOK is already enrolled into UEFI NVRAM, invokes on_confirmed_callback("") immediately.
-        If MOK key is NOT enrolled, prompts the user for a one-time 8-16 character password
-        before running any pkexec operations so that only ONE Polkit prompt appears.
-        """
         target_dir = self.get_current_output_dir()
         status = self.kernel_manager.get_mok_status(target_dir)
         if status.get("key_enrolled", False):
@@ -1415,10 +1259,9 @@ class KernelUpdaterWindow(Adw.ApplicationWindow):
             heading="UEFI Secure Boot & MOK Setup",
             body=(
                 "Your kernel and out-of-tree drivers will be signed with your local Machine Owner Key (MOK).\n\n"
-                f"Certificates will be stored in:\n📂 {target_dir}\n\n"
-                "Because this MOK key is not yet enrolled in your motherboard's UEFI NVRAM, "
-                "please choose a one-time temporary password (8 to 16 characters) to authorize "
-                "it during your next reboot in the MokManager screen:"
+                f"Certificates directory:\n{target_dir}\n\n"
+                "Choose a one-time temporary password (8 to 16 characters) to authorize "
+                "this key in MokManager during your next reboot:"
             ),
             action_id="enroll",
             action_label="Sign & Enroll Key",
@@ -1439,11 +1282,10 @@ class KernelUpdaterWindow(Adw.ApplicationWindow):
         self._present_mok_password_dialog(
             heading="Reset & Recreate MOK Keys",
             body=(
-                f"This will cancel your previous UEFI MOK enrollment, delete old certificates in:\n"
-                f"📂 {target_dir}\n\n"
-                f"It will generate a brand-new RSA-2048 MOK keypair from scratch, re-sign your currently installed "
-                f"kernel in /boot, and queue the new key for enrollment on next reboot.\n\n"
-                f"Enter a new one-time enrollment password (8 to 16 characters):"
+                f"This cancels any previous UEFI MOK enrollment, deletes old certificates in:\n"
+                f"{target_dir}\n\n"
+                "It will generate a new RSA-2048 MOK keypair, re-sign the installed kernel in /boot, "
+                "and queue the new key for enrollment on next reboot."
             ),
             action_id="reset",
             action_label="Reset & Recreate Keys",
@@ -1456,18 +1298,12 @@ class KernelUpdaterWindow(Adw.ApplicationWindow):
 
     def _start_reset_and_recreate_mok(self, target_dir, password):
         self._set_action_buttons_sensitive(False)
-
-        self.log("\n=======================================================")
-        self.log("[*] Resetting & Recreating MOK Keys from Scratch...")
-        self.log(f"    Target Folder: {target_dir}")
-        self.log("=======================================================\n")
+        self.log(f"\n[*] Resetting & Recreating MOK Keys in {target_dir}...")
 
         def worker():
             try:
                 success, mok_status = self.kernel_manager.reset_and_recreate_mok_keys(
-                    output_dir=target_dir,
-                    mok_password=password,
-                    log_callback=self.log
+                    output_dir=target_dir, mok_password=password, log_callback=self.log
                 )
                 GLib.idle_add(self._on_reset_mok_complete, success, mok_status, target_dir)
             except Exception as e:
@@ -1481,7 +1317,7 @@ class KernelUpdaterWindow(Adw.ApplicationWindow):
         self.refresh_secure_boot_ui()
 
         if success:
-            self.log(f"[✓] MOK keypair regenerated in {target_dir} and queued for UEFI enrollment!")
+            self.log(f"[✓] MOK keypair regenerated in {target_dir} and queued for UEFI enrollment.")
             self.show_mok_enrolled_reboot_dialog()
         else:
             self.log(f"[!] MOK reset failed: {mok_status}")
@@ -1495,7 +1331,6 @@ class KernelUpdaterWindow(Adw.ApplicationWindow):
         return False
 
     def show_mok_enrolled_reboot_dialog(self):
-        """Displays instructions for MokManager on the next reboot."""
         dialog = Adw.MessageDialog(
             transient_for=self,
             heading="MOK Enrollment Queued for Next Reboot",
@@ -1506,37 +1341,23 @@ class KernelUpdaterWindow(Adw.ApplicationWindow):
                 "  2. Select 'Enroll MOK'\n"
                 "  3. Select 'Continue' and 'Yes' to confirm\n"
                 "  4. Enter the one-time password you just created\n"
-                "  5. Select 'Reboot'\n\n"
-                "After these steps, your signed CachyOS kernel will boot securely!"
+                "  5. Select 'Reboot'"
             )
         )
         dialog.add_response("ok", "Got It")
         dialog.present()
 
     def show_mok_already_enrolled_dialog(self):
-        """Displays confirmation when MOK key is already enrolled in UEFI."""
         dialog = Adw.MessageDialog(
             transient_for=self,
             heading="Kernel Signed & Ready",
             body=(
                 "The kernel and DKMS modules in /boot are cryptographically signed with your active MOK key.\n\n"
-                "Your key is already enrolled in UEFI NVRAM, so you can reboot immediately!"
+                "Your key is already enrolled in UEFI NVRAM, so you can reboot immediately."
             )
         )
         dialog.add_response("ok", "OK")
         dialog.present()
-
-    def on_enroll_mok_clicked(self, button=None):
-        def _do_enroll(pwd):
-            self.log("[*] Queueing MOK enrollment...")
-            success, mok_status = self.kernel_manager.sign_existing_installed_kernel(kernel_version="auto", mok_password=pwd, log_callback=self.log)
-            if success:
-                if mok_status == "ENROLLMENT_QUEUED":
-                    self.show_mok_enrolled_reboot_dialog()
-                else:
-                    self.show_mok_already_enrolled_dialog()
-
-        self.request_mok_password_dialog(_do_enroll)
 
     def on_copy_log_clicked(self, button):
         buffer = self.terminal_view.get_buffer()
@@ -1554,14 +1375,12 @@ class KernelUpdaterWindow(Adw.ApplicationWindow):
 
         display = Gdk.Display.get_default()
         if display:
-            clipboard = display.get_clipboard()
-            clipboard.set(copy_text)
-            self.log("[✓] Build log copied to system clipboard.")
+            display.get_clipboard().set(copy_text)
+            self.log("[✓] Build log copied to clipboard.")
 
     def on_clear_log_clicked(self, button):
-        buffer = self.terminal_view.get_buffer()
-        buffer.set_text("")
-        self.log("[i] Terminal log buffer cleared.")
+        self.terminal_view.get_buffer().set_text("")
+        self.log("[i] Log buffer cleared.")
 
     def on_rollback_clicked(self, button):
         installed_kernels = self.kernel_manager.get_installed_kernels()
@@ -1570,37 +1389,34 @@ class KernelUpdaterWindow(Adw.ApplicationWindow):
             return
 
         current_kernel = self.kernel_manager.get_current_kernel_version()
-
         dialog = Adw.MessageDialog(
             transient_for=self,
             heading="Rollback Kernel",
-            body="Select an installed kernel package to remove.\n\n⚠️ Caution: Do not remove the kernel you are currently running!"
+            body="Select an installed kernel package to remove.\n\nCaution: Do not remove the kernel you are currently running."
         )
         dialog.add_response("cancel", "Cancel")
         dialog.add_response("remove", "Remove Package")
         dialog.set_response_appearance("remove", Adw.ResponseAppearance.DESTRUCTIVE)
 
         dropdown = Gtk.DropDown.new_from_strings(installed_kernels)
-
         for i, pkg in enumerate(installed_kernels):
             if current_kernel not in pkg:
                 dropdown.set_selected(i)
                 break
-
         dialog.set_extra_child(dropdown)
 
-        def on_response(dlg, response):
+        def on_response(_dlg, response):
             if response == "remove":
                 selected_item = dropdown.get_selected_item()
                 if selected_item:
                     package_name = selected_item.get_string()
                     self.log(f"[*] Requesting root authentication to purge {package_name}...")
-
                     def remove_task():
                         success = self.kernel_manager.remove_kernel(package_name, progress_callback=self.log)
                         if success:
-                            GLib.idle_add(self.log, f"[✓] Removed {package_name}. Reboot your computer to boot the previous kernel.")
-
+                            updated = self.kernel_manager.get_installed_kernels()
+                            GLib.idle_add(self._populate_installed_kernels_list, updated)
+                            GLib.idle_add(self.log, f"[✓] Removed {package_name}.")
                     threading.Thread(target=remove_task, daemon=True).start()
 
         dialog.connect("response", on_response)
