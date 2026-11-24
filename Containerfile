@@ -1,12 +1,20 @@
-FROM docker.io/library/debian:bookworm-slim
+ARG BASE_IMAGE=docker.io/library/debian:trixie-slim
+FROM ${BASE_IMAGE}
 
-ENV DEBIAN_FRONTEND=noninteractive
+LABEL org.cachyos.builder.version="2"
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    HOME=/tmp
 
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     build-essential \
     bc \
     bison \
     flex \
+    gawk \
+    perl \
+    file \
+    pkgconf \
     libssl-dev \
     libelf-dev \
     libncurses-dev \
@@ -14,11 +22,17 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
     libudev-dev \
     libpci-dev \
     libiberty-dev \
+    libyaml-dev \
+    libcap-dev \
+    libnuma-dev \
     autoconf \
     dwarves \
     pahole \
     zstd \
     xz-utils \
+    bzip2 \
+    gzip \
+    tar \
     lz4 \
     cpio \
     rsync \
@@ -34,6 +48,7 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
     python3 \
     python3-gi \
     python3-requests \
+    python3-packaging \
     clang \
     llvm \
     lld \

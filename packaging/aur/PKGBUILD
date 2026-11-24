@@ -1,6 +1,6 @@
 # Maintainer: Antonio De Gaetano <antux912012@users.noreply.github.com>
 pkgname=debian-cachy-os-kernel-updater
-pkgver=1.2.0
+pkgver=1.2.1
 pkgrel=1
 pkgdesc="Native GTK4 & Libadwaita CachyOS Kernel Installer & Updater for Debian-based systems"
 arch=('any')

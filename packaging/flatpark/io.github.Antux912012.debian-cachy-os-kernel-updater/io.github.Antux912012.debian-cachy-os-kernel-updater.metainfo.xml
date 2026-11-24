@@ -49,6 +49,18 @@
     </screenshot>
   </screenshots>
   <releases>
+    <release version="1.2.1" date="2026-11-24">
+      <description>
+        <p>Version 1.2.1 Podman/Docker Container Build Fix &amp; Icon Refresh:</p>
+        <ul>
+          <li>Fixed Podman/Docker container kernel compilation by passing the detected host BASE_IMAGE (debian:trixie-slim for Trixie/Forky/Sid) via --build-arg instead of always building against bookworm-slim</li>
+          <li>Added missing kernel and deb-pkg build dependencies (gawk, perl, file, pkgconf, libyaml-dev, libcap-dev, libnuma-dev, python3-packaging, bzip2) to Containerfile</li>
+          <li>Set HOME=/tmp in rootless Podman (--userns=keep-id) container invocations so dpkg-buildpackage, clang, and fakeroot have a writable home directory</li>
+          <li>Added builder image version label (org.cachyos.builder.version=2) so outdated container images are automatically rebuilt</li>
+          <li>Refreshed application icon with a new vector SVG and updated PNG icon set</li>
+        </ul>
+      </description>
+    </release>
     <release version="1.2.0" date="2026-11-13">
       <description>
         <p>Version 1.2.0 UI/UX, Kernel, Podman, and UEFI Release:</p>

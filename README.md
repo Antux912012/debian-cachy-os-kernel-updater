@@ -11,11 +11,11 @@ An independent, community-driven **GTK4 / Libadwaita** application designed for 
 ![GTK4](https://img.shields.io/badge/GUI-GTK4%20%2F%20Libadwaita-00A896?logo=gnome&logoColor=white)
 ![Python](https://img.shields.io/badge/Language-Python%203-3776AB?logo=python&logoColor=white)
 ![Flatpak](https://img.shields.io/badge/Flatpak-io.github.Antux912012.debian--cachy--os--kernel--updater-4A90D9?logo=flathub&logoColor=white)
-![Version](https://img.shields.io/badge/version-1.2.0-00A896.svg)
+![Version](https://img.shields.io/badge/version-1.2.1-00A896.svg)
 ![License](https://img.shields.io/badge/License-GPL--3.0--or--later-blue.svg)
 
 <p align="center">
-  <img src="assets/logo_256.png" alt="Kernel Updater for CachyOS on Debian Logo" width="180">
+  <img src="assets/io.github.Antux912012.debian-cachy-os-kernel-updater.svg" alt="Kernel Updater for CachyOS on Debian Logo" width="180">
 </p>
 
 ## Application Screenshots
@@ -53,7 +53,7 @@ An independent, community-driven **GTK4 / Libadwaita** application designed for 
 3. **Automated Source & Config Download:** Downloads the pre-patched official CachyOS kernel tree and the official CachyOS `.config`.
 4. **Containerized Compilation & Host OS Auto-Detection (Debian & Ubuntu):**
    * Automatically inspects `/run/host/etc/os-release` (inside Flatpak) and `/etc/os-release` to detect whether the host is **Debian** (Bookworm, Trixie, Sid, LMDE, MX) or **Ubuntu** (24.04 LTS+, Pop!_OS, Linux Mint, KDE neon, Zorin).
-   * Dynamically selects `debian:bookworm-slim` (`cachyos-kernel-builder:debian`) on Debian hosts or `ubuntu:24.04` (`cachyos-kernel-builder:ubuntu`) on Ubuntu hosts when compiling inside an isolated **Podman** or **Docker** container, tagging built kernels (`-cachyos-debian` vs `-cachyos-ubuntu`) and output directories accordingly.
+   * Dynamically selects `debian:trixie-slim` (on Debian Trixie/Forky/Sid), `debian:bookworm-slim` (on Debian Bookworm), or `ubuntu:24.04` (`cachyos-kernel-builder:ubuntu`) on Ubuntu hosts when compiling inside an isolated **Podman** or **Docker** container, tagging built kernels (`-cachyos-debian` vs `-cachyos-ubuntu`) and output directories accordingly.
 5. **⚡ Compile for My System (Experimental):**
    * **Hardware Auto-Detection:** Automatically scans your machine's CPU vendor (Intel/AMD), CPU model, thread count, form-factor (laptop battery vs desktop), root filesystem, and active hardware modules.
    * **Native CPU Optimization (`-march=native`):** Directs the compiler to utilize your exact CPU microarchitecture instructions (AVX2, AVX-512, BMI2, modern cache line sizes) for maximum responsiveness.
@@ -122,13 +122,13 @@ sudo apt install cachy-kernel-updater
 
 ### Method 2: Direct `.deb` Package Download
 
-Download the pre-compiled `.deb` package from the [v1.2.0 Release Page](https://github.com/Antux912012/debian-cachy-os-kernel-updater/releases/tag/v1.2.0):
+Download the pre-compiled `.deb` package from the [v1.2.1 Release Page](https://github.com/Antux912012/debian-cachy-os-kernel-updater/releases/tag/v1.2.1):
 
-* 📦 **[cachy-kernel-updater_1.2.0_all.deb](https://github.com/Antux912012/debian-cachy-os-kernel-updater/releases/download/v1.2.0/cachy-kernel-updater_1.2.0_all.deb)**
+* 📦 **[cachy-kernel-updater_1.2.1_all.deb](https://github.com/Antux912012/debian-cachy-os-kernel-updater/releases/download/v1.2.1/cachy-kernel-updater_1.2.1_all.deb)**
 
 Install it using `apt` (which automatically installs any missing dependencies):
 ```bash
-sudo apt install -y ./cachy-kernel-updater_1.2.0_all.deb
+sudo apt install -y ./cachy-kernel-updater_1.2.1_all.deb
 ```
 
 ---
@@ -137,12 +137,12 @@ sudo apt install -y ./cachy-kernel-updater_1.2.0_all.deb
 
 * **AppImage** (runs across Debian/Ubuntu/Linux distributions with GTK4/Libadwaita):
 ```bash
-chmod +x ./Debian-CachyOS-Kernel-Updater-1.2.0-x86_64.AppImage
-./Debian-CachyOS-Kernel-Updater-1.2.0-x86_64.AppImage
+chmod +x ./Debian-CachyOS-Kernel-Updater-1.2.1-x86_64.AppImage
+./Debian-CachyOS-Kernel-Updater-1.2.1-x86_64.AppImage
 ```
 * **RPM Package (`.rpm`)**:
 ```bash
-sudo dnf install ./cachy-kernel-updater-1.2.0-1.noarch.rpm
+sudo dnf install ./cachy-kernel-updater-1.2.1-1.noarch.rpm
 ```
 * **Arch Linux / AUR (`packaging/aur/PKGBUILD`)**:
 ```bash

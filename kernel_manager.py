@@ -6,7 +6,7 @@ import re
 import glob
 import stat
 
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.2.1"
 
 class KernelManager:
     APP_VERSION = APP_VERSION
@@ -708,12 +708,20 @@ class KernelManager:
             if self.container_image_tag in self._verified_container_images:
                 return True
 
-            # Verify that essential build tools (such as libdw-dev) exist in the container image
+            # Verify builder image version label and essential build tools
+            ver_res = self._run_host_subproc(
+                [engine, "inspect", "--format", "{{ index .Config.Labels \"org.cachyos.builder.version\" }}", self.container_image_tag],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=10
+            )
+            if ver_res.returncode != 0 or ver_res.stdout.strip() != "2":
+                self._verified_container_images.discard(self.container_image_tag)
+                return False
+
             check_pkg = self._run_host_subproc(
-                [engine, "run", "--rm", self.container_image_tag, "dpkg-query", "-W", "-f=${Status}", "libdw-dev"],
+                [engine, "run", "--rm", self.container_image_tag, "dpkg-query", "-W", "-f=${Status}\\n", "libdw-dev", "gawk", "file", "pkgconf"],
                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=15
             )
-            if "install ok installed" in check_pkg.stdout:
+            if check_pkg.returncode == 0 and check_pkg.stdout.count("install ok installed") >= 4:
                 self._verified_container_images.add(self.container_image_tag)
                 return True
             return False
@@ -764,13 +772,20 @@ class KernelManager:
             with open(containerfile_path, "w") as cf:
                 cf.write(f"""FROM {base_img}
 
-ENV DEBIAN_FRONTEND=noninteractive
+LABEL org.cachyos.builder.version="2"
+
+ENV DEBIAN_FRONTEND=noninteractive \\
+    HOME=/tmp
 
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \\
     build-essential \\
     bc \\
     bison \\
     flex \\
+    gawk \\
+    perl \\
+    file \\
+    pkgconf \\
     libssl-dev \\
     libelf-dev \\
     libncurses-dev \\
@@ -778,11 +793,17 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
     libudev-dev \\
     libpci-dev \\
     libiberty-dev \\
+    libyaml-dev \\
+    libcap-dev \\
+    libnuma-dev \\
     autoconf \\
     dwarves \\
     pahole \\
     zstd \\
     xz-utils \\
+    bzip2 \\
+    gzip \\
+    tar \\
     lz4 \\
     cpio \\
     rsync \\
@@ -798,6 +819,7 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
     python3 \\
     python3-gi \\
     python3-requests \\
+    python3-packaging \\
     clang \\
     llvm \\
     lld \\
@@ -814,7 +836,7 @@ ENV DEBEMAIL="builder@localhost"
 WORKDIR /workspace
 """)
 
-        build_cmd = [engine, "build", "-t", self.container_image_tag, "-f", containerfile_path, os.path.dirname(containerfile_path)]
+        build_cmd = [engine, "build", "--build-arg", f"BASE_IMAGE={base_img}", "-t", self.container_image_tag, "-f", containerfile_path, os.path.dirname(containerfile_path)]
         self._run_cmd(build_cmd, progress_callback=progress_callback)
         if progress_callback:
             progress_callback(f"[✓] Successfully built container image: {self.container_image_tag}\n")
@@ -1212,6 +1234,7 @@ WORKDIR /workspace
             container_prefix += [
                 "-v", f"{self.download_dir}:/workspace:z",
                 "-w", f"/workspace/{rel_kernel}",
+                "-e", "HOME=/tmp",
                 "-e", "DEBFULLNAME=CachyOS Debian Builder",
                 "-e", "DEBEMAIL=builder@localhost",
                 "-e", "KBUILD_BUILD_USER=cachyos",

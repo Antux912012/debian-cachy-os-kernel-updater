@@ -55,9 +55,9 @@ modules:
         filename: cachy-kernel-updater.deb
         only-arches:
           - x86_64
-        url: https://github.com/Antux912012/debian-cachy-os-kernel-updater/releases/download/v1.2.0/cachy-kernel-updater_1.2.0_all.deb
-        sha256: c23055fd09fede34b8aa4704b2d20fc73b558c206b5afb1331397d7b6a81952c
-        size: 5228924
+        url: https://github.com/Antux912012/debian-cachy-os-kernel-updater/releases/download/v1.2.1/cachy-kernel-updater_1.2.1_all.deb
+        sha256: 51ddc560fe2c3332efc0d6b87ed83300e3f0b6a04b51dfcfa4df90bec1fad296
+        size: 3039636
       # END MANAGED EXTRA-DATA
       - type: file
         path: apply_extra.sh
